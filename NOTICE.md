@@ -1,0 +1,11 @@
+# Notices
+
+G-ALN (GPU BWA-ALN) is distributed under the GNU General Public License v3 (see `LICENSE`).
+
+- Its alignment search (`src/bwtgap_hd.h`, `src/gapw.cuh`, `src/bwtsearch.h`) is a port of BWA's
+  `bwt_match_gap`, `bwt_occ4`/`bwt_2occ4`, `bwt_cal_width` and related code from BWA 0.7.19
+  (Heng Li; https://github.com/lh3/bwa; GPLv3).
+- `src/kseq.h` and `src/index/bwa_upstream/` (`bntseq.[ch]`, `utils.[ch]`, `kseq.h`, `khash.h`,
+  `ksort.h`) are unmodified copies from BWA 0.7.19 carrying MIT licence headers.
+- `third_party/libsais` (v2.10.4) and `third_party/libcubwt` (v1.6.3), by Ilya Grebnov, are used
+  unmodified under the Apache License 2.0 (see their `LICENSE` files).
