@@ -1,12 +1,11 @@
 # G-ALN
 
 G-ALN runs `bwa aln` on NVIDIA GPUs. Its output (`.sai`) is byte-identical to that of BWA 0.7.19,
-so it can replace `bwa aln` in existing pipelines, for example ancient-DNA mapping with
-`-l 1024 -n 0.01 -o 2`, followed by the usual `bwa samse` / `bwa sampe`.
+for example ancient-DNA mapping with `-l 1024 -n 0.01 -o 2`,
+followed by the usual `bwa samse` / `bwa sampe`.
 
 G-ALN also builds the BWA index (`galn index`), with files identical to those of `bwa index`.
 
-Version 0.2.1.
 
 ## Requirements
 
@@ -40,7 +39,7 @@ galn index -p ref ref.fa
 galn aln -l 1024 -n 0.01 -o 2 ref reads.fq.gz > reads.sai
 ```
 
-3. Make SAM with stock BWA, as usual:
+3. Make SAM with BWA, as usual:
 
 ```
 bwa samse ref reads.sai reads.fq.gz > reads.sam
@@ -48,7 +47,7 @@ bwa samse ref reads.sai reads.fq.gz > reads.sam
 
 G-ALN uses all GPUs and all CPU cores given to the job, e.g. `sbatch --gpus=4 --exclusive ...`.
 All `bwa aln` options have the same meaning and defaults as in BWA 0.7.19 (not supported: `-q`, BAM input).
-Run `galn aln` without arguments to see all options, including `--gpu-only`, `--cpu-only` and `--gpus`.
+Run `galn aln` without arguments to see all options, including `--gpus`, `--cpu-only` and `--gpu-only`.
 
 ## Checking that the output is identical to bwa aln
 
@@ -64,15 +63,13 @@ md5sum bwa.sai galn.sai          # or: cmp bwa.sai galn.sai
 
 If the two runs used different `-t` values, compare everything except the thread count in the header:
 
-```
-cmp -n 56 bwa.sai galn.sai && cmp -i 60 bwa.sai galn.sai && echo "identical (except -t)"
-```
-
 ## License
 
-GPLv3, because G-ALN's search code is a port of BWA (GPLv3). Bundled libraries: libsais and libcubwt
-(Apache-2.0, Ilya Grebnov). See `LICENSE` and `NOTICE.md`.
+GPLv3.
 
 ## Citation
 
-Manuscript in preparation.
+G-ALN manuscript in preparation. G-ALN is adapted from the BWA source code, so please also cite BWA:
+
+Li H. and Durbin R. (2009) Fast and accurate short read alignment with Burrows-Wheeler transform.
+*Bioinformatics*, 25, 1754-1760.
