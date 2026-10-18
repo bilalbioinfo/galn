@@ -1,8 +1,8 @@
 # G-ALN
 
 G-ALN runs `bwa aln` on NVIDIA GPUs. Its output (`.sai`) is byte-identical to that of BWA 0.7.19,
-for example ancient-DNA mapping with `-l 1024 -n 0.01 -o 2`,
-followed by the usual `bwa samse` / `bwa sampe`.
+for example for ancient-DNA mapping with `galn aln -l 1024 -n 0.01 -o 2 ref reads.fq.gz > reads.sai`,
+and is used with the usual `bwa samse` / `bwa sampe`.
 
 G-ALN also builds the BWA index (`galn index`), with files identical to those of `bwa index`.
 
@@ -60,8 +60,6 @@ bwa  aln -t 16 -l 1024 -n 0.01 -o 2 ref reads.fq.gz > bwa.sai
 galn aln -t 16 -l 1024 -n 0.01 -o 2 ref reads.fq.gz > galn.sai
 md5sum bwa.sai galn.sai          # or: cmp bwa.sai galn.sai
 ```
-
-If the two runs used different `-t` values, compare everything except the thread count in the header:
 
 ## License
 
