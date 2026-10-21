@@ -68,5 +68,3 @@ G-ALN is adapted from the BWA source code, so please also cite BWA:
 
 Li H. and Durbin R. (2009) Fast and accurate short read alignment with Burrows-Wheeler transform.
 *Bioinformatics*, 25, 1754-1760.
-
-The read datasets used for benchmarking are available at Zenodo: https://doi.org/10.5281/zenodo.23455049
