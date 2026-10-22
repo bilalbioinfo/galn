@@ -4,8 +4,8 @@
  *
  * Writes <prefix>.{pac,ann,amb,bwt,sa}, byte-identical to `bwa index` (BWA 0.7.19; the
  * BWT of a text is unique, so `-a is`, `-a bwtsw` and `-a rb2` all give these files).
- *   default  GPU builder: libcubwt BWT on the GPU when the text fits (about 2^31 symbols
- *            and GPU memory), otherwise a multi-threaded CPU suffix sort (libsais64);
+ *   default  GPU builder: BWT on the GPU (libcubwt up to about 2^31 symbols, galn_gpu_bwt for
+ *            longer texts), or a multi-threaded CPU suffix sort (libsais64) if GPU memory is too small;
  *            BWT packing, occurrence counts and suffix-array sampling on the GPU.
  *   --cpu    CPU-only builder (no GPU needed).
  * The prefix defaults to the FASTA file name, as in bwa index.
@@ -26,7 +26,8 @@ static int index_usage(void)
         "         -t INT   CPU threads for the CPU parts [all available]\n"
         "         --cpu    build on the CPU only (no GPU)\n\n"
         "Writes <prefix>.pac .ann .amb .bwt .sa, byte-identical to `bwa index` (BWA 0.7.19).\n"
-        "Host memory: about 10 bytes per reference base (~65 GB for a human genome).\n\n");
+        "GPU memory: about 13 bytes per reference base plus working space; with less, the suffix\n"
+        "array is built on the CPU. Host memory: about 8 bytes per base (about 20 on the CPU path).\n\n");
     return 1;
 }
 

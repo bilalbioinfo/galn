@@ -7,7 +7,15 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 set(CMAKE_C_FLAGS_RELEASE "-O2")
 
-find_package(ZLIB REQUIRED)
+# zlib-ng (third_party/zlib-ng, zlib licence), built statically in zlib-compatible mode and used for all
+# gzip input/output: it decompresses FASTQ.gz about twice as fast as the system zlib.
+set(ZLIB_COMPAT ON CACHE BOOL "" FORCE)
+set(ZLIB_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+set(ZLIBNG_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+set(WITH_GTEST OFF CACHE BOOL "" FORCE)
+set(SKIP_INSTALL_ALL ON CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF)
+add_subdirectory(third_party/zlib-ng EXCLUDE_FROM_ALL)
 find_package(OpenMP REQUIRED COMPONENTS C)
 find_package(Threads REQUIRED)
 
@@ -26,7 +34,7 @@ if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
   set(CMAKE_CUDA_ARCHITECTURES 70 75 80 86 89 90)
 endif()
 
-set(GALN_INDEX_SRC src/index/galn_index.c src/index/gpu_index.cu src/index/cpu_ref.c src/index/idxcommon.c
+set(GALN_INDEX_SRC src/index/galn_index.c src/index/gpu_index.cu src/index/gpu_sa.cu src/index/cpu_ref.c src/index/idxcommon.c
     src/index/bwa_upstream/bntseq.c src/index/bwa_upstream/utils.c
     third_party/libsais/src/libsais.c third_party/libsais/src/libsais64.c third_party/libcubwt/libcubwt.cu)
 set_source_files_properties(src/index/gpu_index.cu PROPERTIES COMPILE_DEFINITIONS "main=galn_index_gpu_main;LIBSAIS_OPENMP")
@@ -47,5 +55,5 @@ add_executable(galn src/galn.cu src/host_io.c src/aln_host.c src/aln_il.c ${GALN
 target_include_directories(galn PRIVATE src src/index third_party/libsais/include third_party/libcubwt)
 target_compile_options(galn PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-fopenmp>
                                     $<$<COMPILE_LANGUAGE:C>:${OpenMP_C_FLAGS}>)
-target_link_libraries(galn PRIVATE ZLIB::ZLIB gomp m Threads::Threads)
+target_link_libraries(galn PRIVATE zlib gomp m Threads::Threads)
 set_target_properties(galn PROPERTIES CUDA_SEPARABLE_COMPILATION ON CUDA_STANDARD 17)

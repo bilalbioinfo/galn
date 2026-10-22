@@ -8,7 +8,7 @@ G-ALN runs `bwa aln/index` on NVIDIA GPUs. The output files are byte-identical t
 
 - An NVIDIA GPU of compute capability 7.0 or newer (tested on NVIDIA GH200)
 - CUDA toolkit 11.8 or newer
-- CMake 3.18 or newer, a C/C++ compiler with OpenMP (e.g. GCC), zlib
+- CMake 3.18 or newer and a C/C++ compiler with OpenMP (e.g. GCC); zlib (zlib-ng) is included
 
 ## Install
 

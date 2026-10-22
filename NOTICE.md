@@ -14,3 +14,5 @@ G-ALN (GPU BWA-ALN) is distributed under the GNU General Public License v3 (see 
   `bwa_refine_gapped` to work on one read at a time.
 - `third_party/libsais` (v2.10.4) and `third_party/libcubwt` (v1.6.3), by Ilya Grebnov, are used
   unmodified under the Apache License 2.0 (see their `LICENSE` files).
+- `third_party/zlib-ng` (v2.2.4, without its tests and documentation) is used unmodified under the zlib
+  licence (see its `LICENSE.md`), built in zlib-compatible mode.

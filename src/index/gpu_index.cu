@@ -3,9 +3,10 @@
  * Pipeline (single GPU):
  *   1. [-f] FASTA -> .pac/.ann/.amb with the unmodified upstream bns_fasta2bntseq(for_only=1)   (CPU)
  *   2. forward .pac -> T = F . revcomp(F), one symbol per byte                                  (CPU, OpenMP)
- *   3. BWT of T$ with libcubwt (prefix doubling + DC3 on the GPU); returns `primary`              (GPU)
- *      libcubwt needs 16 <= n < ~2^31 and ~20.5n bytes of device memory; otherwise (or with -C)
- *      the suffix array is built with libsais64 on the host cores (e.g. GRCh38, n = 6.6e9)        (CPU fallback)
+ *   3. BWT of T$ on the GPU; returns `primary`                                                     (GPU)
+ *      n < 2^31: libcubwt (prefix doubling + DC3, ~20.5n bytes of device memory);
+ *      longer texts: galn_gpu_bwt (gpu_sa.cu: bucketed radix sort + prefix doubling, ~7.2n bytes);
+ *      if neither fits in device memory (or with -C), libsais64 on the host cores                (CPU fallback)
  *   4. pack BWT 2 bits/symbol + interleave Occ every 128 symbols (bwt_bwtupdate_core layout)      (GPU + CUB scan)
  *   5. SA samples SA'[32k]: from every row r = 32k walk LF until the next row that is a multiple
  *      of 32 (each walk ~32 steps, all walks independent), then list-rank the resulting linked
@@ -30,6 +31,7 @@
 #include "idxcommon.h"
 #include "libcubwt.cuh"
 #include "libsais64.h"
+#include "gpu_sa.h"
 
 #define CK(call) do { cudaError_t e_ = (call); if (e_ != cudaSuccess) { \
 	fprintf(stderr, "[galn-index-gpu] CUDA error %s at %s:%d: %s\n", cudaGetErrorName(e_), __FILE__, __LINE__, cudaGetErrorString(e_)); exit(2); } } while (0)
@@ -324,14 +326,25 @@ int main(int argc, char *argv[])
 	const uint64_t n = 2 * (uint64_t)l_pac;
 	uint8_t *hT;
 	CK(cudaHostAlloc((void **)&hT, n + 128, cudaHostAllocDefault));
-	galn_pac_to_text(pac, l_pac, hT);
-	free(pac);
-	fprintf(stderr, "[galn-index-gpu] text n=%llu loaded and expanded: %.2f s\n", (unsigned long long)n, galn_realtime() - t);
+	fprintf(stderr, "[galn-index-gpu] .pac read, n=%llu: %.2f s\n", (unsigned long long)n, galn_realtime() - t);
 
-	/* step 3: BWT (in place: hT becomes L, $ removed) */
+	/* step 3: BWT into hT (L, $ removed) */
 	t = galn_realtime();
 	uint64_t primary = 0;
-	int use_cubwt = n >= 16 && !force_cpu;
+	const char *env_gsa = getenv("GALN_GPU_BWT");   /* =1: galn_gpu_bwt for any n (testing) */
+	int use_gsa = !force_cpu && n >= 16 && (n >= ((uint64_t)1 << 31) || (env_gsa && *env_gsa == '1'));
+	if (use_gsa) {
+		int64_t pr = galn_gpu_bwt(pac, l_pac, hT);
+		if (pr >= 0) fprintf(stderr, "[galn-index-gpu] BWT (galn_gpu_bwt): %.3f s, primary=%llu\n", galn_realtime() - t, (unsigned long long)(primary = pr));
+		else fprintf(stderr, "[galn-index-gpu] galn_gpu_bwt cannot handle n=%llu: falling back to CPU libsais64\n", (unsigned long long)n);
+		use_gsa = pr >= 0;
+	}
+	if (!use_gsa) {
+		galn_pac_to_text(pac, l_pac, hT);
+		fprintf(stderr, "[galn-index-gpu] text expanded: %.2f s\n", galn_realtime() - t);
+	}
+	free(pac);
+	int use_cubwt = n >= 16 && !force_cpu && !use_gsa;
 	if (use_cubwt) {
 		void *storage = NULL;
 		int64_t rc = libcubwt_allocate_device_storage(&storage, (int64_t)n);
@@ -349,7 +362,7 @@ int main(int argc, char *argv[])
 					galn_realtime() - t, t1 - t, t2 - t1, (unsigned long long)primary);
 		}
 	}
-	if (!use_cubwt) {
+	if (!use_cubwt && !use_gsa) {
 		primary = cpu_bwt_libsais(hT, n, omp_get_max_threads());
 		fprintf(stderr, "[galn-index-gpu] BWT (CPU fallback): %.3f s, primary=%llu\n", galn_realtime() - t, (unsigned long long)primary);
 	}
