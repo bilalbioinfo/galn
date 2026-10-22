@@ -40,6 +40,8 @@ galn aln -l 1024 -n 0.01 -o 2 ref reads.fq.gz > reads.sai
 bwa samse ref reads.sai reads.fq.gz | samtools view -b -o reads.bam -
 ```
 
+Note: `galn samse` and `galn sampe` are currently being implemented and will be released soon.
+They will directly output BAM files.
 
 All `bwa aln` options have the same meaning and defaults as in BWA 0.7.19 (not supported yet: `-q`, BAM input).
 Run `galn aln` without arguments to see all options, including `--gpus`, `--cpu-only` and `--gpu-only`.
@@ -49,7 +51,8 @@ Run `galn aln` without arguments to see all options, including `--gpus`, `--cpu-
 `bwa aln` writes its `-t` value (number of threads) into the header of the `.sai` file.
 To achieve byte-identical output, G-ALN does the same, but in G-ALN `-t` only sets this header value.
 It does not change how many threads G-ALN uses. G-ALN uses all GPUs and all CPU cores given to the job.
-To get a file identical to your `bwa aln` run, give `galn aln` the same `-t` value:
+If you are interested in confirming byte-identical output, please  give `galn aln` the same `-t` value,
+as `bwa aln` run:
 
 ```
 bwa  aln -t 16 -l 1024 -n 0.01 -o 2 ref reads.fq.gz > bwa.sai
