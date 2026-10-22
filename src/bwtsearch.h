@@ -1,15 +1,13 @@
 /* bwtsearch.h — DUAL-TARGET occurrence layer + exact-match search.
  *
- * This is the code that gets ported to the GPU. Every function here is a
- * fresh reimplementation of BWA's occurrence + backward-search primitives,
+ * Every function here is a fresh reimplementation of BWA's occurrence + backward-search primitives,
  * written to compile UNCHANGED as:
  *   - plain host C   (gcc/g++)  -> used by the CPU workers
  *   - CUDA device code (nvcc)   -> used by the GPU kernels
  *
  * The BWT is passed as raw, read-only pointers plus a tiny descriptor, so
  * this header has NO dependency on BWA's headers or on any host struct. That
- * is deliberate: it is exactly the read-only-shared-index / one-thread-per-read
- * shape described in the runbook.
+ * is deliberate: the index is shared read-only by all CPU workers and GPU threads.
  *
  * Layout assumption: OCC_INTERVAL == 0x80 (128), matching upstream bwt.h.
  * Verified against lh3/bwa 0.7.19-r1273.

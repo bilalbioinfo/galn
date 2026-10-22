@@ -1,5 +1,5 @@
-/* aln_host.h — host-side pieces of bwa_cal_sa_reg_gap() (bwtaln.c), shared by
- * the CPU reference driver and the GPU driver's host fallback. */
+/* aln_host.h — host-side pieces of bwa_cal_sa_reg_gap() (bwtaln.c), used by the
+ * CPU workers and the GPU driver. */
 #ifndef ALN_HOST_H
 #define ALN_HOST_H
 

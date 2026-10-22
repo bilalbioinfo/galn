@@ -1,7 +1,6 @@
 /* idxcommon.h -- shared helpers for the G-ALN index builders (CPU reference and GPU).
  *
- * Everything here reproduces the on-disk conventions of BWA 0.7.19 `bwa index`
- * (see 8_index/DESIGN.md for the derivation from the upstream sources):
+ * Everything here reproduces the on-disk conventions of BWA 0.7.19 `bwa index`:
  *   - text T = F . revcomp(F), F = forward 2-bit sequence stored in <prefix>.pac
  *   - BWT of T$ ($ smallest), $ removed, `primary` = row of $ in the (n+1)-row matrix
  *   - .bwt = primary, L2[1..4], then 128-symbol blocks [4 x u64 Occ][8 x u32 BWT words], final 4 x u64
