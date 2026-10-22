@@ -4,7 +4,7 @@
  *   bwt.c      bwt_occ4, bwt_2occ4, bwt_match_exact_alt
  *   bwtaln.c   bwt_cal_width
  *   bwtgap.c   gap_push, gap_pop, gap_shadow, int_log2, bwt_match_gap
- * Compiles unchanged as host C (CPU reference / GPU host fallback) and as CUDA
+ * Compiles unchanged as host C (CPU workers) and as CUDA
  * device code (one thread per read), like bwtsearch.h.
  *
  * The only structural change is the priority stack. Upstream keeps one

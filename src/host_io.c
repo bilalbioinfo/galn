@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
+#include <pthread.h>
 
 /* Standard BWA nucleotide table: A/a=0 C/c=1 G/g=2 T/t=3, everything else 4 ('-'=5). */
 static const unsigned char nt4[256] = {
@@ -67,25 +68,91 @@ uint32_t *load_bwt(const char *fn, bwtgpu_meta_t *m)
     return (uint32_t*)mem;
 }
 
-/* bwa's FASTQ/FASTA parser; gzread errors are recorded instead of being taken for EOF */
-static int g_gz_failed = 0;
-static int gzread_chk(gzFile f, void *buf, unsigned len)
+/* ---- FASTQ input: a decompression thread fills a ring of chunks, bwa's kseq parser reads them ---- */
+#define IN_CHUNK (4 << 20)
+#define IN_NCHUNK 16
+typedef struct {
+    gzFile fp;
+    char *buf[IN_NCHUNK];
+    int len[IN_NCHUNK];        /* 0: end of input */
+    long head, tail;           /* chunks filled, chunks released by the parser */
+    int failed, stop;
+    pthread_mutex_t mu;
+    pthread_cond_t cv;
+    char *cur;                 /* parser side: chunk being read */
+    int cur_len, cur_pos, eof;
+} instream_t;
+
+static void *inflate_main(void *arg)
 {
-    int r = gzread(f, buf, len);
-    if (r < 0) { g_gz_failed = 1; return 0; }
-    return r;
+    instream_t *s = (instream_t*)arg;
+    for (;;) {
+        pthread_mutex_lock(&s->mu);
+        while (s->head - s->tail == IN_NCHUNK && !s->stop) pthread_cond_wait(&s->cv, &s->mu);
+        int k = (int)(s->head % IN_NCHUNK), stop = s->stop;
+        pthread_mutex_unlock(&s->mu);
+        if (stop) break;
+        int r = gzread(s->fp, s->buf[k], IN_CHUNK);
+        pthread_mutex_lock(&s->mu);
+        if (r < 0) { s->failed = 1; r = 0; }   /* a decompression error is not taken for EOF */
+        s->len[k] = r; ++s->head;
+        pthread_cond_signal(&s->cv);
+        pthread_mutex_unlock(&s->mu);
+        if (r == 0) break;
+    }
+    return NULL;
+}
+
+/* kseq's read function: copies from the current chunk; returns 0 only at the end of input */
+static int in_read(instream_t *s, void *dst, int n)
+{
+    if (s->cur_pos == s->cur_len) {
+        if (s->eof) return 0;
+        pthread_mutex_lock(&s->mu);
+        if (s->cur) { ++s->tail; pthread_cond_signal(&s->cv); }
+        while (s->head == s->tail) pthread_cond_wait(&s->cv, &s->mu);
+        int k = (int)(s->tail % IN_NCHUNK);
+        s->cur = s->buf[k]; s->cur_len = s->len[k]; s->cur_pos = 0;
+        pthread_mutex_unlock(&s->mu);
+        if (s->cur_len == 0) { s->eof = 1; return 0; }
+    }
+    int m = s->cur_len - s->cur_pos < n ? s->cur_len - s->cur_pos : n;
+    memcpy(dst, s->cur + s->cur_pos, m);
+    s->cur_pos += m;
+    return m;
 }
 #include "kseq.h"
-KSEQ_INIT(gzFile, gzread_chk)
+KSEQ_INIT(instream_t*, in_read)
+
+/* Read names and queries live in large blocks (galn reads one FASTQ per run; free_reads frees them all). */
+#define ARENA_BLOCK ((size_t)64 << 20)
+typedef struct arena_blk { struct arena_blk *next; size_t used, cap; char data[]; } arena_blk;
+static arena_blk *g_arena = NULL;
+static void *arena_alloc(size_t n)
+{
+    if (!g_arena || g_arena->cap - g_arena->used < n) {
+        size_t cap = n > ARENA_BLOCK ? n : ARENA_BLOCK;
+        arena_blk *b = (arena_blk*)malloc(sizeof(arena_blk) + cap);
+        if (!b) return NULL;
+        b->next = g_arena; b->used = 0; b->cap = cap; g_arena = b;
+    }
+    void *p = g_arena->data + g_arena->used;
+    g_arena->used += n;
+    return p;
+}
 
 read_t *read_fastq(const char *fn, int *n)
 {
-    gzFile fp = gzopen(fn, "rb");   /* reads plain or gzip-compressed input */
-    if (!fp) { fprintf(stderr, "[read_fastq] cannot open %s\n", fn); return NULL; }
-    gzbuffer(fp, 1 << 20);
-    g_gz_failed = 0;
-    kseq_t *ks = kseq_init(fp);
-    size_t cap = 1024; int cnt = 0, batch = 0, in_batch = 0;
+    instream_t s;
+    memset(&s, 0, sizeof(s));
+    if (!(s.fp = gzopen(fn, "rb"))) { fprintf(stderr, "[read_fastq] cannot open %s\n", fn); return NULL; }   /* plain or gzip */
+    gzbuffer(s.fp, 1 << 20);
+    for (int i = 0; i < IN_NCHUNK; ++i) s.buf[i] = (char*)malloc(IN_CHUNK);
+    pthread_mutex_init(&s.mu, NULL); pthread_cond_init(&s.cv, NULL);
+    pthread_t tid;
+    pthread_create(&tid, NULL, inflate_main, &s);
+    kseq_t *ks = kseq_init(&s);
+    size_t cap = 1024; int cnt = 0, batch = 0, in_batch = 0, oom = 0;
     read_t *reads = (read_t*)malloc(cap * sizeof(read_t));
     for (;;) {
         int l = kseq_read(ks);
@@ -97,8 +164,10 @@ read_t *read_fastq(const char *fn, int *n)
         }
         if (ks->seq.l == 0) continue;          /* seq.l <= l_bc: skipped */
         int len = (int)ks->seq.l;
-        char *name = strdup(ks->name.s);
-        uint8_t *q = (uint8_t*)malloc((size_t)len);
+        char *name = (char*)arena_alloc(ks->name.l + 1);
+        uint8_t *q = (uint8_t*)arena_alloc((size_t)len);
+        if (!name || !q) { oom = 1; break; }
+        memcpy(name, ks->name.s, ks->name.l + 1);
         /* query = complement(nt4(seq[len-1-j])) : reverse + complement in one pass */
         for (int j = 0; j < len; ++j) {
             uint8_t b = nt4[(unsigned char)ks->seq.s[len - 1 - j]];
@@ -109,10 +178,18 @@ read_t *read_fastq(const char *fn, int *n)
         ++cnt;
         if (++in_batch == HOST_ALN_BATCH) { ++batch; in_batch = 0; }
     }
+    pthread_mutex_lock(&s.mu);                 /* parsing may stop before the end: release the thread */
+    s.stop = 1;
+    pthread_cond_signal(&s.cv);
+    pthread_mutex_unlock(&s.mu);
+    pthread_join(tid, NULL);
     kseq_destroy(ks);
-    int zc = gzclose(fp);
-    if (g_gz_failed || zc != Z_OK) {
-        fprintf(stderr, "[read_fastq] error reading %s (%s)\n", fn, g_gz_failed? "decompression error" : "truncated or corrupt input");
+    int zc = gzclose(s.fp);
+    for (int i = 0; i < IN_NCHUNK; ++i) free(s.buf[i]);
+    pthread_mutex_destroy(&s.mu); pthread_cond_destroy(&s.cv);
+    if (s.failed || zc != Z_OK || oom) {
+        fprintf(stderr, "[read_fastq] error reading %s (%s)\n", fn,
+                oom? "out of memory" : s.failed? "decompression error" : "truncated or corrupt input");
         free_reads(reads, cnt);
         return NULL;
     }
@@ -132,6 +209,7 @@ int read_batch_ranges(const read_t *r, int n, int **start)
 
 void free_reads(read_t *r, int n)
 {
-    for (int i = 0; i < n; ++i) { free(r[i].name); free(r[i].query); }
+    (void)n;
+    while (g_arena) { arena_blk *b = g_arena; g_arena = b->next; free(b); }
     free(r);
 }

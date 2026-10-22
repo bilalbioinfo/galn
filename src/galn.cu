@@ -61,7 +61,7 @@ extern "C" {
 #include "sai_writer.h"
 #include "opt_build.h"
 
-#define GALN_VERSION "0.2.1"
+#include "version.h"
 
 /* fatal error from any thread: the first caller reports and ends the process with _exit
  * (no atexit / CUDA runtime teardown while other threads are still inside CUDA calls) */
@@ -147,7 +147,9 @@ static int usage(void)
         "\nProgram: G-ALN (GPU BWA-ALN), version " GALN_VERSION "\n"
         "         byte-identical replacement for `bwa aln` (BWA 0.7.19) on NVIDIA GPUs\n\n"
         "Usage:   galn index [-p prefix] [-t threads] [--cpu] <in.fasta>   (see `galn index`)\n"
-        "         galn aln [options] <prefix> <in.fq[.gz]>\n\n"
+        "         galn aln [options] <prefix> <in.fq[.gz]>\n"
+        "         galn samse [options] <prefix> <in.sai> <in.fq> > out.bam   (see `galn samse`)\n"
+        "         galn sampe [options] <prefix> <in1.sai> <in2.sai> <in1.fq> <in2.fq> > out.bam   (see `galn sampe`)\n\n"
         "bwa aln options (same meaning and defaults as BWA 0.7.19):\n"
         "         -n NUM    max #diff (int) or missing prob under 0.02 err rate (float) [0.04]\n"
         "         -o INT    maximum number of gap opens [1]\n"
@@ -157,7 +159,8 @@ static int usage(void)
         "         -l INT    seed length [32]\n"
         "         -k INT    maximum differences in the seed [2]\n"
         "         -m INT    maximum entries in the queue [2000000]\n"
-        "         -t INT    number of threads written to the .sai header [1] (see --cpu-workers)\n"
+        "         -dt INT   dummy threads: only the thread count written to the .sai header, as bwa aln -t [1]\n"
+        "                   (G-ALN always uses all GPUs and CPU cores of the job)\n"
         "         -M INT    mismatch penalty [3]\n"
         "         -O INT    gap open penalty [11]\n"
         "         -E INT    gap extension penalty [4]\n"
@@ -222,7 +225,7 @@ static int parse_args(int argc, char **argv, sai_gap_opt_t *o, const char **pref
         else if (!strcmp(a, "-l")) o->seed_len = atoi(v);
         else if (!strcmp(a, "-k")) o->max_seed_diff = atoi(v);
         else if (!strcmp(a, "-m")) o->max_entries = atoi(v);
-        else if (!strcmp(a, "-t")) o->n_threads = atoi(v);
+        else if (!strcmp(a, "-dt") || !strcmp(a, "-t")) o->n_threads = atoi(v);   /* -dt is -t: only the .sai header value */
         else if (!strcmp(a, "-R")) o->max_top2 = atoi(v);
         else if (!strcmp(a, "-f")) *outfn = v;
         else if (!strcmp(a, "-q")) {
@@ -1238,12 +1241,16 @@ int galn_aln(int argc, char **argv)
 }
 
 extern "C" int galn_index(int argc, char *argv[]);   /* src/index/galn_index.c */
+extern "C" int galn_samse(int argc, char *argv[]);   /* src/samse/galn_samse.c */
+extern "C" int galn_sampe(int argc, char *argv[]);   /* src/samse/galn_sampe.c */
 
 int main(int argc, char **argv)
 {
     if (argc < 2) return usage();
     if (!strcmp(argv[1], "aln")) return galn_aln(argc - 2, argv + 2);
     if (!strcmp(argv[1], "index")) return galn_index(argc - 2, argv + 2);
+    if (!strcmp(argv[1], "samse")) return galn_samse(argc - 2, argv + 2);
+    if (!strcmp(argv[1], "sampe")) return galn_sampe(argc - 2, argv + 2);
     if (!strcmp(argv[1], "--version") || !strcmp(argv[1], "version")) { printf("G-ALN %s\n", GALN_VERSION); return 0; }
     fprintf(stderr, "[galn] unknown command '%s'\n", argv[1]);
     return usage();
