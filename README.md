@@ -1,14 +1,18 @@
 # G-ALN
 
 G-ALN runs `bwa aln/index` on NVIDIA GPUs. The output files are byte-identical to that of BWA 0.7.19.
-`galn samse/sampe` run `bwa samse/sampe` on all CPU cores and write BAM directly, with the same alignments as BWA.
 
+
+![Benchmarks](docs/benchmarks.png)
+
+Benchmarks of G-ALN 0.2.4 (dark blue) compared with the preprint version 0.2.1 (light blue) and BWA 0.7.19 (grey);
+all output files are identical to those of BWA.
 
 ## Requirements
 
 - An NVIDIA GPU of compute capability 7.0 or newer (tested on NVIDIA GH200)
 - CUDA toolkit 11.8 or newer
-- CMake 3.18 or newer and a C/C++ compiler with OpenMP (e.g. GCC); zlib (zlib-ng) is included
+- CMake 3.18 or newer and a C/C++ compiler with OpenMP (e.g. GCC)
 
 ## Install
 
@@ -47,25 +51,29 @@ For paired-end reads, map both files with `galn aln`, then:
 galn sampe -f pairs.bam ref reads_1.sai reads_2.sai reads_1.fq.gz reads_2.fq.gz
 ```
 
-`galn samse/sampe` take the same options as `bwa samse/sampe`; add `--sam` to write SAM instead of BAM.
-
+`galn samse/sampe` run `bwa samse/sampe` on the CPU cores of the GPU node and write BAM directly, with the same
+alignments as BWA. `galn samse/sampe` take the same options as `bwa samse/sampe`; add `--sam` to write SAM instead of BAM.
 
 All `bwa aln` options have the same meaning and defaults as in BWA 0.7.19 (not supported yet: `-q`, BAM input).
 Run `galn aln` without arguments to see all options, including `--gpus`, `--cpu-only` and `--gpu-only`.
 
-## how to check if the files are identical to bwa aln
+## Checking byte-identical output (optional)
 
+This is only needed if you want to confirm that G-ALN gives byte-identical files to `bwa aln`.
 `bwa aln` writes its `-t` value (number of threads) into the header of the `.sai` file.
-To achieve byte-identical output, G-ALN does the same with `-dt` (dummy threads), which only sets this header value.
-It does not change how many threads G-ALN uses. G-ALN uses all GPUs and all CPU cores given to the job.
-`-t` is accepted as the same option, so existing `bwa aln` commands work unchanged.
-To get a file identical to your `bwa aln` run, give `galn aln` the same value:
+`galn aln -dt` (dummy threads) sets this header value; it does not change how many threads G-ALN uses.
+G-ALN always uses all GPUs and internal CPUs cores given to the job.
+Give `galn aln -dt` the same value as `bwa aln -t`:
 
 ```
 bwa  aln -t 16  -l 1024 -n 0.01 -o 2 ref reads.fq.gz > bwa.sai
 galn aln -dt 16 -l 1024 -n 0.01 -o 2 ref reads.fq.gz > galn.sai
 md5sum bwa.sai galn.sai
 ```
+
+## Changelog
+
+Changes between versions are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## Citation
 
