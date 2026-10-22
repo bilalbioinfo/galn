@@ -34,7 +34,16 @@ set_source_files_properties(src/index/cpu_ref.c PROPERTIES COMPILE_DEFINITIONS "
 set_source_files_properties(third_party/libsais/src/libsais.c third_party/libsais/src/libsais64.c
     PROPERTIES COMPILE_DEFINITIONS LIBSAIS_OPENMP)
 
-add_executable(galn src/galn.cu src/host_io.c src/aln_host.c src/aln_il.c ${GALN_INDEX_SRC})
+# galn samse / sampe: BWA 0.7.19's samse/sampe code (src/samse/bwa_upstream, unchanged) with parallel drivers.
+# No FMA contraction, so mapping qualities round exactly like upstream on every host architecture.
+# (src/samse/bwa_upstream/bwape.c is not compiled on its own: galn_sampe.c includes it, to use its static functions.)
+set(GALN_SAMSE_SRC src/samse/galn_samse.c src/samse/galn_sampe.c src/samse/sam_common.c src/samse/bam_out.c src/samse/bwa_shim.c
+    src/samse/bwa_upstream/bwase.c src/samse/bwa_upstream/bwaseqio.c src/samse/bwa_upstream/bwt.c
+    src/samse/bwa_upstream/ksw.c src/samse/bwa_upstream/bamlite.c src/samse/bwa_upstream/kstring.c)
+set_source_files_properties(${GALN_SAMSE_SRC} PROPERTIES COMPILE_OPTIONS "-ffp-contract=off"
+    INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/src/samse/bwa_upstream;${CMAKE_CURRENT_SOURCE_DIR}/src/index/bwa_upstream")
+
+add_executable(galn src/galn.cu src/host_io.c src/aln_host.c src/aln_il.c ${GALN_INDEX_SRC} ${GALN_SAMSE_SRC})
 target_include_directories(galn PRIVATE src src/index third_party/libsais/include third_party/libcubwt)
 target_compile_options(galn PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-fopenmp>
                                     $<$<COMPILE_LANGUAGE:C>:${OpenMP_C_FLAGS}>)
