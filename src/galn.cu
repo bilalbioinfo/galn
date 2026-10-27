@@ -431,6 +431,10 @@ int galn_aln(int argc, char **argv)
         }
     }
     const int ndev = (int)devlist.size();
+    {   /* host memory off the GPUs' memory (GH200: HBM is also a NUMA node), so it stays free for the search */
+        int kept = host_mem_cpu_nodes_only();
+        if (kept && verbose) fprintf(stderr, "[galn] host memory bound to the %d NUMA nodes with CPUs\n", kept);
+    }
 
     /* ---- CPUs of the job: one driver thread per GPU (on a core next to it), the rest are workers ---- */
     std::vector<int> cpus;
@@ -527,6 +531,10 @@ int galn_aln(int argc, char **argv)
         for (int w = 0; w < workers; ++w)
             if (std::find(rep_node.begin(), rep_node.end(), wnode[w]) == rep_node.end()) rep_node.push_back(wnode[w]);
         if (rep_node.size() < 2) rep_node.clear();
+        if (!rep_node.empty() && (double)bwt_bytes * rep_node.size() > 0.5 * host_mem_avail()) {   /* a large index: one copy */
+            if (verbose) fprintf(stderr, "[galn] index of %.1f GB: one host copy for the CPU workers instead of %zu\n", bwt_bytes / 1e9, rep_node.size());
+            rep_node.clear();
+        }
         rep_ptr.assign(rep_node.size(), nullptr);
         std::vector<std::thread> rt;
         for (size_t k = 0; k < rep_node.size(); ++k) rt.emplace_back([&, k] {

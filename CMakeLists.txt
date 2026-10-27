@@ -34,7 +34,7 @@ if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
   set(CMAKE_CUDA_ARCHITECTURES 70 75 80 86 89 90)
 endif()
 
-set(GALN_INDEX_SRC src/index/galn_index.c src/index/gpu_index.cu src/index/gpu_sa.cu src/index/cpu_ref.c src/index/idxcommon.c
+set(GALN_INDEX_SRC src/index/galn_index.c src/index/gpu_index.cu src/index/gpu_sa.cu src/index/gpu_sa_ranks.cu src/index/cpu_ref.c src/index/idxcommon.c src/index/fasta_pac.c
     src/index/bwa_upstream/bntseq.c src/index/bwa_upstream/utils.c
     third_party/libsais/src/libsais.c third_party/libsais/src/libsais64.c third_party/libcubwt/libcubwt.cu)
 set_source_files_properties(src/index/gpu_index.cu PROPERTIES COMPILE_DEFINITIONS "main=galn_index_gpu_main;LIBSAIS_OPENMP")

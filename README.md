@@ -5,8 +5,10 @@ G-ALN runs `bwa aln/index` on NVIDIA GPUs. The output files are byte-identical t
 
 ![Benchmarks](docs/benchmarks.png)
 
-Benchmarks of G-ALN 0.2.4 (dark blue) compared with the preprint version 0.2.1 (light blue) and BWA 0.7.19 (grey);
-all output files are identical to those of BWA.
+Benchmarks of G-ALN 0.2.6 (dark blue) compared with the preprint version 0.2.1 (light blue),
+BWA 0.7.19 and bowtie2-build (grey); all output files are identical to those of BWA. e–f: indexing SE_Plant_database
+(39 genomes, 66.7 Gbp) on a GPU node (4 GH200) and with bowtie2-build on a CPU node: wall-clock time (e) and peak
+memory (f; for G-ALN, peak host memory, not counting GPU memory).
 
 ## Requirements
 
@@ -32,6 +34,9 @@ The program is `build/galn`.
 ```
 galn index -p ref ref.fa
 ```
+
+`galn index` uses the fastest GPU builder that fits in GPU memory; `-a` chooses one (run `galn index` to see the
+options). The largest reference tested so far is 66.7 Gbp, on a node with four GH200s.
 
 2. Map the reads (example for aDNA reads):
 

@@ -43,12 +43,12 @@
 #define GAPW_ERR_HANDOFF (-7)   /* handed to the CPU: stack past the hand-off size while the CPU has room */
 
 /* Stack entry as stored: 16 bytes, two words (upstream gap_entry_t is 32 bytes).
- *   w0 = k | i<<36 | last_diff_pos<<45 | n_mm<<54 | state<<60
- *   w1 = l | n_gapo<<36 | n_gape<<42 | n_ins<<48 | n_del<<56
- * The score is the bucket index. A push whose values do not fit (k or l >= 2^36, i.e. a
- * text longer than ~6.9e10; n_mm/n_gapo/n_gape > 63; n_ins/n_del > 255) gives the read up
- * with GAPW_ERR_UNSUP, so the CPU searches it instead and the output stays exact. */
-#define GAPW_KBITS 36
+ *   w0 = k | i<<38 | last_diff_pos<<47 | n_mm<<56 | state<<62
+ *   w1 = l | n_gapo<<38 | n_gape<<44 | n_ins<<50 | n_del<<57
+ * The score is the bucket index. A read whose values may not fit (a text of 2^38 or more,
+ * about 2.7e11 symbols; n_mm/n_gapo/n_gape > 63, hence n_ins/n_del > 126) is given up with
+ * GAPW_ERR_UNSUP, so the CPU searches it instead and the output stays exact. */
+#define GAPW_KBITS 38
 #define GAPW_KMASK ((1ull << GAPW_KBITS) - 1)
 struct __align__(16) gapw_entry {
     uint64_t w0, w1;
@@ -400,7 +400,7 @@ struct gapw_ctx {
  * gets as the parent's score (its bucket) plus the child's penalty (the score is linear in the counts).
  * Every field fits the 16-byte entry: gapw_kernel only starts reads whose options bound them
  * (n_mm <= max_diff+1 <= 63, n_gapo <= max_gapo <= 63, n_gape <= max_gape <= 63, n_ins and n_del <=
- * n_gapo + n_gape <= 126, i <= len <= 256, k and l <= seq_len < 2^36); other reads go to the CPU. */
+ * n_gapo + n_gape <= 126, i <= len <= 256, k and l <= seq_len < 2^38); other reads go to the CPU. */
 __device__ __forceinline__ int gapw_push(gapw_ctx &C, int score, int i, uint64_t k, uint64_t l, int n_mm, int n_gapo, int n_gape,
                                          int n_ins, int n_del, int state, int is_diff)
 {
@@ -416,8 +416,8 @@ __device__ __forceinline__ int gapw_push(gapw_ctx &C, int score, int i, uint64_t
         c = nc; cnt = 0;
     }
     gapw_entry e;
-    e.w0 = k | (uint64_t)i << 36 | (uint64_t)(is_diff? i : 0) << 45 | (uint64_t)n_mm << 54 | (uint64_t)state << 60;
-    e.w1 = l | (uint64_t)n_gapo << 36 | (uint64_t)n_gape << 42 | (uint64_t)n_ins << 48 | (uint64_t)n_del << 56;
+    e.w0 = k | (uint64_t)i << 38 | (uint64_t)(is_diff? i : 0) << 47 | (uint64_t)n_mm << 56 | (uint64_t)state << 62;
+    e.w1 = l | (uint64_t)n_gapo << 38 | (uint64_t)n_gape << 44 | (uint64_t)n_ins << 50 | (uint64_t)n_del << 57;
     C.a->chunks[(size_t)c * GAPW_CHUNK + cnt] = e;
     S->top_cnt[score] = (uint16_t)(cnt + 1);
     ++C.n_entries;
@@ -436,15 +436,15 @@ __device__ __forceinline__ void gapw_pop(gapw_ctx &C, gapw_eview &e)
         const gapw_entry p = C.a->chunks[(size_t)c * GAPW_CHUNK + cnt];
         e.k = p.w0 & GAPW_KMASK;
         e.l = p.w1 & GAPW_KMASK;
-        int i = (int)(p.w0 >> 36 & 511);
+        int i = (int)(p.w0 >> 38 & 511);
         e.info = (uint32_t)b << 21 | (uint32_t)i;      /* the bucket is the score */
-        e.last_diff_pos = (int)(p.w0 >> 45 & 511);
-        e.n_mm = (int)(p.w0 >> 54 & 63);
-        e.state = (int)(p.w0 >> 60 & 3);
-        e.n_gapo = (int)(p.w1 >> 36 & 63);
-        e.n_gape = (int)(p.w1 >> 42 & 63);
-        e.n_ins = (int)(p.w1 >> 48 & 255);
-        e.n_del = (int)(p.w1 >> 56 & 255);
+        e.last_diff_pos = (int)(p.w0 >> 47 & 511);
+        e.n_mm = (int)(p.w0 >> 56 & 63);
+        e.state = (int)(p.w0 >> 62 & 3);
+        e.n_gapo = (int)(p.w1 >> 38 & 63);
+        e.n_gape = (int)(p.w1 >> 44 & 63);
+        e.n_ins = (int)(p.w1 >> 50 & 127);
+        e.n_del = (int)(p.w1 >> 57 & 127);
     }
     ++C.n_pops;
     bool emptied = false;

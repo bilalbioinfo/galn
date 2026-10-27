@@ -8,6 +8,8 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
+#include <dirent.h>
 #include <pthread.h>
 
 /* Standard BWA nucleotide table: A/a=0 C/c=1 G/g=2 T/t=3, everything else 4 ('-'=5). */
@@ -63,6 +65,7 @@ uint32_t *load_bwt(const char *fn, bwtgpu_meta_t *m)
             done += (size_t)r;
         }
     }
+    posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);   /* the index is in our buffer now: no page-cache copy */
     close(fd);
     if (!ok) { fprintf(stderr, "[load_bwt] short read on %s\n", fn); free(mem); return NULL; }
     return (uint32_t*)mem;
@@ -212,4 +215,29 @@ void free_reads(read_t *r, int n)
     (void)n;
     while (g_arena) { arena_blk *b = g_arena; g_arena = b->next; free(b); }
     free(r);
+}
+
+/* Keep this process's host memory (and the page cache it fills) on the NUMA nodes that have CPUs. On a
+ * GH200 each GPU's HBM is also a NUMA node without CPUs, where Linux would otherwise put host pages once
+ * the CPU memory is full, taking that memory from the GPU. Does nothing when every node has CPUs. */
+int host_mem_cpu_nodes_only(void)
+{
+    unsigned long mask[16] = {0};
+    int ncpu_nodes = 0, nmem_only = 0;
+    DIR *d = opendir("/sys/devices/system/node");
+    if (!d) return 0;
+    for (struct dirent *e; (e = readdir(d)) != NULL; ) {
+        if (strncmp(e->d_name, "node", 4) || e->d_name[4] < '0' || e->d_name[4] > '9') continue;
+        int node = atoi(e->d_name + 4);
+        if (node < 0 || node >= 16 * 64) continue;
+        char path[300], buf[64] = "";
+        snprintf(path, sizeof(path), "/sys/devices/system/node/%s/cpulist", e->d_name);
+        FILE *fp = fopen(path, "r");
+        if (fp) { if (!fgets(buf, sizeof(buf), fp)) buf[0] = 0; fclose(fp); }
+        if (buf[0] >= '0' && buf[0] <= '9') { mask[node / 64] |= 1UL << (node % 64); ++ncpu_nodes; }
+        else ++nmem_only;
+    }
+    closedir(d);
+    if (!ncpu_nodes || !nmem_only) return 0;
+    return syscall(SYS_set_mempolicy, 2 /* MPOL_BIND */, mask, (unsigned long)(16 * 64)) == 0 ? ncpu_nodes : 0;
 }

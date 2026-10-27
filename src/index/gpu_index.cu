@@ -1,19 +1,22 @@
 /* galn-index-gpu: GPU builder for bwa-compatible (BWA 0.7.19 `bwa index`) .bwt and .sa files.
  *
- * Pipeline (single GPU):
- *   1. [-f] FASTA -> .pac/.ann/.amb with the unmodified upstream bns_fasta2bntseq(for_only=1)   (CPU)
+ * Pipeline (the current GPU; galn_gpu_bwt also uses the others):
+ *   1. [-f] FASTA -> .pac/.ann/.amb as upstream bns_fasta2bntseq(for_only=1) writes them      (CPU, OpenMP)
  *   2. forward .pac -> T = F . revcomp(F), one symbol per byte                                  (CPU, OpenMP)
  *   3. BWT of T$ on the GPU; returns `primary`                                                     (GPU)
- *      n < 2^31: libcubwt (prefix doubling + DC3, ~20.5n bytes of device memory);
- *      longer texts: galn_gpu_bwt (gpu_sa.cu: bucketed radix sort + prefix doubling, ~7.2n bytes);
- *      if neither fits in device memory (or with -C), libsais64 on the host cores                (CPU fallback)
+ *      -A gpu: n < 2^31: libcubwt (prefix doubling + DC3, ~20.5n bytes of device memory); longer
+ *              texts: galn_gpu_bwt_ranks (gpu_sa_ranks.cu, a rank per position, ~6.25n bytes);
+ *      -A gpu-lowmem: galn_gpu_bwt (gpu_sa.cu, ~0.4n bytes + working space, passes on all GPUs;
+ *              also gives the SA samples of step 5);
+ *      -A auto (default): the first of these that fits; if none does (or with -C), libsais64 on the
+ *              host cores                                                                         (CPU fallback)
  *   4. pack BWT 2 bits/symbol + interleave Occ every 128 symbols (bwt_bwtupdate_core layout)      (GPU + CUB scan)
  *   5. SA samples SA'[32k]: from every row r = 32k walk LF until the next row that is a multiple
  *      of 32 (each walk ~32 steps, all walks independent), then list-rank the resulting linked
  *      list of n/32 nodes by pointer jumping. SA'[r] = (#LF steps from r back to row 0) - 1.         (GPU)
  *   6. write .bwt / .sa (.bwt written by a host thread while step 5 runs)                         (CPU)
  *
- * Usage: galn-index-gpu [-f in.fasta] [-t threads] [-C] <prefix>
+ * Usage: galn-index-gpu [-f in.fasta] [-t threads] [-A auto|gpu|gpu-lowmem] [-C] [-v] <prefix>
  *        galn-index-gpu -B in.bwt <out_prefix>   (GPU replacement of `bwa bwt2sa`, any n < 2^37)
  */
 #include <cstdio>
@@ -32,11 +35,13 @@
 #include "libcubwt.cuh"
 #include "libsais64.h"
 #include "gpu_sa.h"
+extern "C" int host_mem_cpu_nodes_only(void);   /* host_io.c */
 
 #define CK(call) do { cudaError_t e_ = (call); if (e_ != cudaSuccess) { \
-	fprintf(stderr, "[galn-index-gpu] CUDA error %s at %s:%d: %s\n", cudaGetErrorName(e_), __FILE__, __LINE__, cudaGetErrorString(e_)); exit(2); } } while (0)
+	GALN_VLOG("[galn-index-gpu] CUDA error %s at %s:%d: %s\n", cudaGetErrorName(e_), __FILE__, __LINE__, cudaGetErrorString(e_)); exit(2); } } while (0)
 
 static const uint32_t END = 0xffffffffu;
+enum { ALGO_AUTO, ALGO_GPU, ALGO_LOWMEM };   /* -A: auto, gpu (libcubwt / galn_gpu_bwt_ranks), gpu-lowmem (galn_gpu_bwt) */
 
 struct LFParams {
 	const uint32_t *bwt; /* bwa interleaved BWT+Occ body */
@@ -200,7 +205,7 @@ static void sample_sa_gpu(const uint32_t *dBuf, uint64_t n, uint64_t primary, co
 	CK(cudaGetLastError());
 	if (m > 1) CK(cudaMemcpy(hSamples, dSamples, (m - 1) * 8, cudaMemcpyDeviceToHost));
 	CK(cudaEventRecord(ev1)); CK(cudaEventSynchronize(ev1)); CK(cudaEventElapsedTime(&ms, ev0, ev1));
-	fprintf(stderr, "[galn-index-gpu] SA sampling: LF walks %.3f ms over %llu rows (%llu walks), list ranking %d rounds + D2H %.3f ms\n",
+	GALN_VLOG("[galn-index-gpu] SA sampling: LF walks %.3f ms over %llu rows (%llu walks), list ranking %d rounds + D2H %.3f ms\n",
 			ms_walk, (unsigned long long)n + 1, (unsigned long long)m, iters, ms);
 	CK(cudaFree(dNext)); CK(cudaFree(dDist)); CK(cudaFree(dNx2)); CK(cudaFree(dR)); CK(cudaFree(dR2)); CK(cudaFree(dChanged));
 	CK(cudaEventDestroy(ev0)); CK(cudaEventDestroy(ev1));
@@ -227,22 +232,22 @@ static int bwt2sa_mode(const char *fn_bwt, const std::string &out)
 		got += r;
 	}
 	fclose(fp);
-	fprintf(stderr, "[galn-index-gpu] read %s (n=%llu, %.2f GB): %.2f s\n", fn_bwt, (unsigned long long)n, n_words * 4 / 1e9, galn_realtime() - t);
+	GALN_VLOG("[galn-index-gpu] read %s (n=%llu, %.2f GB): %.2f s\n", fn_bwt, (unsigned long long)n, n_words * 4 / 1e9, galn_realtime() - t);
 	t = galn_realtime();
 	uint32_t *dBuf;
 	CK(cudaMalloc(&dBuf, n_words * 4));
 	CK(cudaMemcpy(dBuf, hBuf, n_words * 4, cudaMemcpyHostToDevice));
 	CK(cudaFreeHost(hBuf));
-	fprintf(stderr, "[galn-index-gpu] H2D .bwt: %.3f s\n", galn_realtime() - t);
+	GALN_VLOG("[galn-index-gpu] H2D .bwt: %.3f s\n", galn_realtime() - t);
 	const uint64_t m = (n + GALN_SA_INTV) / GALN_SA_INTV;
 	uint64_t *hSamples;
 	CK(cudaHostAlloc((void **)&hSamples, (m > 1 ? m - 1 : 1) * 8, cudaHostAllocDefault));
 	t = galn_realtime();
 	sample_sa_gpu(dBuf, n, primary, L2, hSamples);
-	fprintf(stderr, "[galn-index-gpu] SA sampling total: %.3f s\n", galn_realtime() - t);
+	GALN_VLOG("[galn-index-gpu] SA sampling total: %.3f s\n", galn_realtime() - t);
 	t = galn_realtime();
 	galn_write_sa((out + ".sa").c_str(), primary, L2, n, hSamples, m - 1);
-	fprintf(stderr, "[galn-index-gpu] write .sa: %.3f s; total %.2f s\n", galn_realtime() - t, galn_realtime() - t0);
+	GALN_VLOG("[galn-index-gpu] write .sa: %.3f s; total %.2f s\n", galn_realtime() - t, galn_realtime() - t0);
 	CK(cudaFree(dBuf)); CK(cudaFreeHost(hSamples));
 	return 0;
 }
@@ -271,7 +276,7 @@ static uint64_t cpu_bwt_libsais(uint8_t *T, uint64_t n, int threads)
 #pragma omp parallel for schedule(static)
 	for (int64_t i = 0; i < (int64_t)n; ++i) T[i] = L[i];
 	free(L);
-	fprintf(stderr, "[galn-index-gpu] CPU fallback: libsais64 SA %.2f s + BWT %.2f s (%d threads)\n", t1 - t, galn_realtime() - t1, threads);
+	GALN_VLOG("[galn-index-gpu] CPU fallback: libsais64 SA %.2f s + BWT %.2f s (%d threads)\n", t1 - t, galn_realtime() - t1, threads);
 	return primary;
 }
 
@@ -282,148 +287,200 @@ int main(int argc, char *argv[])
 {
 	int c, threads = 0;
 	const char *fa = NULL, *from_bwt = NULL;
-	int force_cpu = 0;
-	while ((c = getopt(argc, argv, "f:t:B:C")) >= 0) {
-		if (c == 'f') fa = optarg;
+	int force_cpu = 0, algo = ALGO_AUTO;
+	const char *algo_name = "auto";
+	while ((c = getopt(argc, argv, "f:t:A:B:Cv")) >= 0) {
+		if (c == 'v') galn_index_verbose = 1;
+		else if (c == 'A') {
+			algo_name = optarg;
+			if (!strcmp(optarg, "gpu")) algo = ALGO_GPU;
+			else if (!strcmp(optarg, "gpu-lowmem")) algo = ALGO_LOWMEM;
+			else if (strcmp(optarg, "auto")) { fprintf(stderr, "[galn index] unknown builder %s\n", optarg); return 1; }
+		}
+		else if (c == 'f') fa = optarg;
 		else if (c == 'C') force_cpu = 1;
 		else if (c == 'B') from_bwt = optarg;
 		else if (c == 't') threads = atoi(optarg);
 		else return 1;
 	}
 	if (optind >= argc) {
-		fprintf(stderr, "Usage: galn-index-gpu [-f in.fasta] [-t threads] [-C] <prefix>\n");
-		fprintf(stderr, "       -C  force the CPU (libsais64) suffix sort (automatic if libcubwt cannot handle n)\n");
+		fprintf(stderr, "Usage: galn-index-gpu [-f in.fasta] [-t threads] [-A auto|gpu|gpu-lowmem] [-C] [-v] <prefix>\n");
+		fprintf(stderr, "       -C  force the CPU (libsais64) suffix sort (automatic if no GPU builder can handle n)\n");
 		fprintf(stderr, "       galn-index-gpu -B in.bwt <out_prefix>     (GPU bwt2sa: writes <out_prefix>.sa)\n");
 		return 1;
 	}
 	std::string prefix = argv[optind];
 	if (threads > 0) omp_set_num_threads(threads);
+	if (host_mem_cpu_nodes_only()) GALN_VLOG("[galn-index-gpu] host memory bound to the NUMA nodes with CPUs\n");
 	double t_all = galn_realtime(), t;
 	cudaEvent_t ev0, ev1;
 	float ms;
 
+	cudaDeviceProp prop;
 	{
-		int dev; cudaDeviceProp prop;
+		int dev;
 		t = galn_realtime();
 		CK(cudaGetDevice(&dev)); CK(cudaGetDeviceProperties(&prop, dev)); CK(cudaFree(0));
 		size_t fr, tot; CK(cudaMemGetInfo(&fr, &tot));
-		fprintf(stderr, "[galn-index-gpu] device %s, %.1f GB total / %.1f GB free; CUDA init %.2f s; %d host threads\n",
+		GALN_VLOG("[galn-index-gpu] device %s, %.1f GB total / %.1f GB free; CUDA init %.2f s; %d host threads\n",
 				prop.name, tot / 1e9, fr / 1e9, galn_realtime() - t, omp_get_max_threads());
 	}
 	CK(cudaEventCreate(&ev0)); CK(cudaEventCreate(&ev1));
 	if (from_bwt) return bwt2sa_mode(from_bwt, prefix);
 
+	int64_t l_pac;
+	uint8_t *pac = NULL;
 	if (fa) {
 		t = galn_realtime();
-		int64_t lp = galn_fasta_to_pac(fa, prefix.c_str());
-		fprintf(stderr, "[galn-index-gpu] FASTA -> .pac/.ann/.amb (l_pac=%lld): %.2f s\n", (long long)lp, galn_realtime() - t);
+		l_pac = galn_fasta_to_pac(fa, prefix.c_str(), &pac);
+		GALN_VLOG("[galn-index-gpu] FASTA -> .pac/.ann/.amb (l_pac=%lld): %.2f s\n", (long long)l_pac, galn_realtime() - t);
+		fprintf(stderr, "[galn index] %s: %.2f Gbp\n", fa, l_pac / 1e9);
 	}
 
 	/* step 2 */
 	t = galn_realtime();
-	int64_t l_pac;
-	uint8_t *pac = galn_read_pac((prefix + ".pac").c_str(), &l_pac);
+	if (!pac) pac = galn_read_pac((prefix + ".pac").c_str(), &l_pac);
 	const uint64_t n = 2 * (uint64_t)l_pac;
 	uint8_t *hT;
 	CK(cudaHostAlloc((void **)&hT, n + 128, cudaHostAllocDefault));
-	fprintf(stderr, "[galn-index-gpu] .pac read, n=%llu: %.2f s\n", (unsigned long long)n, galn_realtime() - t);
+	GALN_VLOG("[galn-index-gpu] .pac read, n=%llu: %.2f s\n", (unsigned long long)n, galn_realtime() - t);
 
-	/* step 3: BWT into hT (L, $ removed) */
+	if (!force_cpu) fprintf(stderr, "[galn index] building the index on the GPU (%s)\n", prop.name);
+	/* step 3: BWT into hT: L with $ removed (libcubwt, galn_gpu_bwt_ranks, CPU), or, from galn_gpu_bwt, by row
+	 * with the $ row kept (at primary) and the SA samples already made */
 	t = galn_realtime();
 	uint64_t primary = 0;
-	const char *env_gsa = getenv("GALN_GPU_BWT");   /* =1: galn_gpu_bwt for any n (testing) */
-	int use_gsa = !force_cpu && n >= 16 && (n >= ((uint64_t)1 << 31) || (env_gsa && *env_gsa == '1'));
-	if (use_gsa) {
-		int64_t pr = galn_gpu_bwt(pac, l_pac, hT);
-		if (pr >= 0) fprintf(stderr, "[galn-index-gpu] BWT (galn_gpu_bwt): %.3f s, primary=%llu\n", galn_realtime() - t, (unsigned long long)(primary = pr));
-		else fprintf(stderr, "[galn-index-gpu] galn_gpu_bwt cannot handle n=%llu: falling back to CPU libsais64\n", (unsigned long long)n);
-		use_gsa = pr >= 0;
-	}
-	if (!use_gsa) {
-		galn_pac_to_text(pac, l_pac, hT);
-		fprintf(stderr, "[galn-index-gpu] text expanded: %.2f s\n", galn_realtime() - t);
-	}
-	free(pac);
-	int use_cubwt = n >= 16 && !force_cpu && !use_gsa;
-	if (use_cubwt) {
-		void *storage = NULL;
-		int64_t rc = libcubwt_allocate_device_storage(&storage, (int64_t)n);
-		if (rc != LIBCUBWT_NO_ERROR) {
-			fprintf(stderr, "[galn-index-gpu] libcubwt cannot handle n=%llu (error %lld): falling back to CPU libsais64\n", (unsigned long long)n, (long long)rc);
-			use_cubwt = 0;
-		} else {
-			double t1 = galn_realtime();
-			int64_t idx = libcubwt_bwt(storage, hT, hT, (int64_t)n);
-			if (idx < 0) { fprintf(stderr, "libcubwt_bwt failed: %lld\n", (long long)idx); return 3; }
-			double t2 = galn_realtime();
-			libcubwt_free_device_storage(storage);
-			primary = (uint64_t)idx;
-			fprintf(stderr, "[galn-index-gpu] libcubwt BWT: %.3f s (alloc %.3f s, bwt %.3f s incl. H2D/D2H), primary=%llu\n",
-					galn_realtime() - t, t1 - t, t2 - t1, (unsigned long long)primary);
+	const uint64_t m = (n + GALN_SA_INTV) / GALN_SA_INTV; /* n_sa: rows 0, 32, ..., 32*(m-1) <= n */
+	uint64_t *hSamples = NULL;
+	int done = 0, have_samples = 0;
+	const bool small = n < ((uint64_t)1 << 31);
+	if (!force_cpu && n >= 16) {
+		if (algo != ALGO_LOWMEM && small) {   /* libcubwt */
+			galn_pac_to_text(pac, l_pac, hT);
+			void *storage = NULL;
+			int64_t rc = libcubwt_allocate_device_storage(&storage, (int64_t)n);
+			if (rc != LIBCUBWT_NO_ERROR) {
+				GALN_VLOG("[galn-index-gpu] libcubwt cannot handle n=%llu (error %lld)\n", (unsigned long long)n, (long long)rc);
+			} else {
+				double t1 = galn_realtime();
+				int64_t idx = libcubwt_bwt(storage, hT, hT, (int64_t)n);
+				if (idx < 0) { fprintf(stderr, "libcubwt_bwt failed: %lld\n", (long long)idx); return 3; }
+				double t2 = galn_realtime();
+				libcubwt_free_device_storage(storage);
+				primary = (uint64_t)idx; done = 1;
+				GALN_VLOG("[galn-index-gpu] libcubwt BWT: %.3f s (alloc %.3f s, bwt %.3f s incl. H2D/D2H), primary=%llu\n",
+						galn_realtime() - t, t1 - t, t2 - t1, (unsigned long long)primary);
+			}
+		}
+		if (!done && algo != ALGO_LOWMEM && !small) {   /* a rank per position, if it fits: the faster builder */
+			size_t fr, tot;
+			CK(cudaMemGetInfo(&fr, &tot));
+			if (algo == ALGO_GPU || 6.25 * n + (4.0 * (1ULL << 30)) <= 0.6 * fr) {
+				int64_t pr = galn_gpu_bwt_ranks(pac, l_pac, hT);
+				if (pr >= 0) {
+					primary = (uint64_t)pr; done = 1;
+					GALN_VLOG("[galn-index-gpu] BWT (galn_gpu_bwt_ranks): %.3f s, primary=%llu\n", galn_realtime() - t, (unsigned long long)primary);
+				}
+			}
+		}
+		if (!done && algo != ALGO_GPU) {   /* memory-light, on all GPUs */
+			CK(cudaHostAlloc((void **)&hSamples, (m > 1 ? m - 1 : 1) * 8, cudaHostAllocDefault));
+			int64_t pr = galn_gpu_bwt(pac, l_pac, hT, hSamples);
+			if (pr >= 0) {
+				primary = (uint64_t)pr; done = have_samples = 1;
+				GALN_VLOG("[galn-index-gpu] BWT and SA samples (galn_gpu_bwt): %.3f s, primary=%llu\n", galn_realtime() - t, (unsigned long long)primary);
+			} else {
+				CK(cudaFreeHost(hSamples)); hSamples = NULL;
+				GALN_VLOG("[galn-index-gpu] galn_gpu_bwt cannot handle n=%llu\n", (unsigned long long)n);
+			}
 		}
 	}
-	if (!use_cubwt && !use_gsa) {
-		primary = cpu_bwt_libsais(hT, n, omp_get_max_threads());
-		fprintf(stderr, "[galn-index-gpu] BWT (CPU fallback): %.3f s, primary=%llu\n", galn_realtime() - t, (unsigned long long)primary);
+	if (!done && algo != ALGO_AUTO) {
+		fprintf(stderr, "[galn index] -a %s: not enough GPU memory for this reference (try %s)\n", algo_name,
+				algo == ALGO_GPU ? "-a gpu-lowmem" : "-a cpu");
+		return 1;
 	}
+	if (!done) {
+		if (!force_cpu) fprintf(stderr, "[galn index] the genome does not fit in GPU memory: sorting its suffixes on the CPU (slower)\n");
+		galn_pac_to_text(pac, l_pac, hT);
+		GALN_VLOG("[galn-index-gpu] text expanded: %.2f s\n", galn_realtime() - t);
+		primary = cpu_bwt_libsais(hT, n, omp_get_max_threads());
+		GALN_VLOG("[galn-index-gpu] BWT (CPU fallback): %.3f s, primary=%llu\n", galn_realtime() - t, (unsigned long long)primary);
+	}
+	free(pac);
 
-	/* step 4 */
+	/* step 4: pack the BWT 2 bits/symbol with Occ interleaved, on the GPU if it fits there (always when the SA
+	 * samples still have to be made on the GPU), otherwise on the host cores */
 	t = galn_realtime();
 	const uint64_t nb = (n + 127) / 128, n_words = galn_bwt_words(n);
-	const uint64_t m = (n + GALN_SA_INTV) / GALN_SA_INTV; /* n_sa: rows 0, 32, ..., 32*(m-1) <= n */
-	uint8_t *dL; uint32_t *dBuf; uint64_t *dCnt, *dOcc;
-	CK(cudaMalloc(&dL, nb * 128 + 16));
-	CK(cudaMemset(dL, 0, nb * 128 + 16));
-	CK(cudaMalloc(&dBuf, n_words * 4));
-	CK(cudaMalloc(&dCnt, 4 * (nb + 1) * 8));
-	CK(cudaMalloc(&dOcc, 4 * (nb + 1) * 8));
-	CK(cudaMemset(dCnt, 0, 4 * (nb + 1) * 8));
-	CK(cudaEventRecord(ev0));
-	CK(cudaMemcpy(dL, hT, n, cudaMemcpyHostToDevice));
-	pack_kernel<<<nblk(nb, 256), 256>>>(dL, n, nb, dBuf, dCnt);
-	CK(cudaGetLastError());
-	{
-		size_t tmp_bytes = 0; void *dTmp = NULL;
-		CK(cub::DeviceScan::ExclusiveSum(dTmp, tmp_bytes, dCnt, dOcc, (int64_t)(nb + 1)));
-		CK(cudaMalloc(&dTmp, tmp_bytes));
-		for (int k = 0; k < 4; ++k)
-			CK(cub::DeviceScan::ExclusiveSum(dTmp, tmp_bytes, dCnt + k * (nb + 1), dOcc + k * (nb + 1), (int64_t)(nb + 1)));
-		CK(cudaFree(dTmp));
-	}
-	write_occ_kernel<<<nblk(nb + 1, 256), 256>>>(dOcc, n, nb, dBuf);
-	CK(cudaGetLastError());
-	uint64_t tot[4];
-	for (int k = 0; k < 4; ++k) CK(cudaMemcpy(&tot[k], dOcc + k * (nb + 1) + nb, 8, cudaMemcpyDeviceToHost));
-	CK(cudaEventRecord(ev1)); CK(cudaEventSynchronize(ev1)); CK(cudaEventElapsedTime(&ms, ev0, ev1));
-	CK(cudaFree(dL)); CK(cudaFree(dCnt)); CK(cudaFree(dOcc));
-	CK(cudaFreeHost(hT));
-	uint64_t L2[5] = {0, tot[0], tot[0] + tot[1], tot[0] + tot[1] + tot[2], tot[0] + tot[1] + tot[2] + tot[3]};
-	if (L2[4] != n) { fprintf(stderr, "internal error: L2[4]=%llu != n\n", (unsigned long long)L2[4]); return 4; }
-	fprintf(stderr, "[galn-index-gpu] pack + Occ interleave: %.3f s (GPU %.3f ms incl. H2D of L), L2=%llu,%llu,%llu,%llu\n",
-			galn_realtime() - t, ms, (unsigned long long)L2[1], (unsigned long long)L2[2], (unsigned long long)L2[3], (unsigned long long)L2[4]);
-
-	/* .bwt: copy to host and write it in a background thread while the SA sampling runs */
-	t = galn_realtime();
-	uint32_t *hBuf;
+	uint64_t L2[5];
+	uint32_t *dBuf = NULL, *hBuf;
 	CK(cudaHostAlloc((void **)&hBuf, n_words * 4, cudaHostAllocDefault));
-	CK(cudaMemcpy(hBuf, dBuf, n_words * 4, cudaMemcpyDeviceToHost));
+	size_t fr4, tot4;
+	CK(cudaMemGetInfo(&fr4, &tot4));
+	const double need4 = (double)(nb * 128 + 16) + n_words * 4.0 + 64.0 * (nb + 1) + (1ULL << 30);
+	if (!have_samples || need4 <= fr4) {
+		uint8_t *dL; uint64_t *dCnt, *dOcc;
+		CK(cudaMalloc(&dL, nb * 128 + 16));
+		CK(cudaMemset(dL, 0, nb * 128 + 16));
+		CK(cudaMalloc(&dBuf, n_words * 4));
+		CK(cudaMalloc(&dCnt, 4 * (nb + 1) * 8));
+		CK(cudaMalloc(&dOcc, 4 * (nb + 1) * 8));
+		CK(cudaMemset(dCnt, 0, 4 * (nb + 1) * 8));
+		CK(cudaEventRecord(ev0));
+		if (have_samples) {   /* leave out the $ row */
+			CK(cudaMemcpy(dL, hT, primary, cudaMemcpyHostToDevice));
+			CK(cudaMemcpy(dL + primary, hT + primary + 1, n - primary, cudaMemcpyHostToDevice));
+		} else CK(cudaMemcpy(dL, hT, n, cudaMemcpyHostToDevice));
+		pack_kernel<<<nblk(nb, 256), 256>>>(dL, n, nb, dBuf, dCnt);
+		CK(cudaGetLastError());
+		{
+			size_t tmp_bytes = 0; void *dTmp = NULL;
+			CK(cub::DeviceScan::ExclusiveSum(dTmp, tmp_bytes, dCnt, dOcc, (int64_t)(nb + 1)));
+			CK(cudaMalloc(&dTmp, tmp_bytes));
+			for (int k = 0; k < 4; ++k)
+				CK(cub::DeviceScan::ExclusiveSum(dTmp, tmp_bytes, dCnt + k * (nb + 1), dOcc + k * (nb + 1), (int64_t)(nb + 1)));
+			CK(cudaFree(dTmp));
+		}
+		write_occ_kernel<<<nblk(nb + 1, 256), 256>>>(dOcc, n, nb, dBuf);
+		CK(cudaGetLastError());
+		uint64_t tot[4];
+		for (int k = 0; k < 4; ++k) CK(cudaMemcpy(&tot[k], dOcc + k * (nb + 1) + nb, 8, cudaMemcpyDeviceToHost));
+		CK(cudaEventRecord(ev1)); CK(cudaEventSynchronize(ev1)); CK(cudaEventElapsedTime(&ms, ev0, ev1));
+		CK(cudaFree(dL)); CK(cudaFree(dCnt)); CK(cudaFree(dOcc));
+		L2[0] = 0; L2[1] = tot[0]; L2[2] = L2[1] + tot[1]; L2[3] = L2[2] + tot[2]; L2[4] = L2[3] + tot[3];
+		CK(cudaMemcpy(hBuf, dBuf, n_words * 4, cudaMemcpyDeviceToHost));
+		if (have_samples) { CK(cudaFree(dBuf)); dBuf = NULL; }
+		GALN_VLOG("[galn-index-gpu] pack + Occ interleave on the GPU: %.3f s (GPU %.3f ms incl. H2D of L), L2=%llu,%llu,%llu,%llu\n",
+				galn_realtime() - t, ms, (unsigned long long)L2[1], (unsigned long long)L2[2], (unsigned long long)L2[3], (unsigned long long)L2[4]);
+	} else {
+		galn_pack_bwt_skip(hT, n, primary, hBuf, L2);
+		GALN_VLOG("[galn-index-gpu] pack + Occ interleave on %d host threads: %.3f s, L2=%llu,%llu,%llu,%llu\n", omp_get_max_threads(),
+				galn_realtime() - t, (unsigned long long)L2[1], (unsigned long long)L2[2], (unsigned long long)L2[3], (unsigned long long)L2[4]);
+	}
+	CK(cudaFreeHost(hT));
+	if (L2[4] != n) { fprintf(stderr, "internal error: L2[4]=%llu != n\n", (unsigned long long)L2[4]); return 4; }
+
+	/* .bwt: written by a background thread while the SA sampling runs */
 	double t_bwt_write = 0;
 	std::thread wr([&]() { double a = galn_realtime(); galn_write_bwt((prefix + ".bwt").c_str(), primary, L2, hBuf, n_words); t_bwt_write = galn_realtime() - a; });
-	fprintf(stderr, "[galn-index-gpu] D2H .bwt body: %.3f s\n", galn_realtime() - t);
 
 	/* step 5 */
-	t = galn_realtime();
-	uint64_t *hSamples;
-	CK(cudaHostAlloc((void **)&hSamples, (m > 1 ? m - 1 : 1) * 8, cudaHostAllocDefault));
-	sample_sa_gpu(dBuf, n, primary, L2, hSamples);
-	fprintf(stderr, "[galn-index-gpu] SA sampling total: %.3f s\n", galn_realtime() - t);
+	if (!have_samples) {
+		t = galn_realtime();
+		CK(cudaHostAlloc((void **)&hSamples, (m > 1 ? m - 1 : 1) * 8, cudaHostAllocDefault));
+		sample_sa_gpu(dBuf, n, primary, L2, hSamples);
+		GALN_VLOG("[galn-index-gpu] SA sampling total: %.3f s\n", galn_realtime() - t);
+	}
 
 	t = galn_realtime();
 	galn_write_sa((prefix + ".sa").c_str(), primary, L2, n, hSamples, m - 1);
 	double t_sa_write = galn_realtime() - t;
 	wr.join();
-	fprintf(stderr, "[galn-index-gpu] write .sa %.3f s; write .bwt (overlapped) %.3f s; wait %.3f s\n", t_sa_write, t_bwt_write, galn_realtime() - t - t_sa_write);
-	CK(cudaFree(dBuf)); CK(cudaFreeHost(hBuf)); CK(cudaFreeHost(hSamples));
-	fprintf(stderr, "[galn-index-gpu] total wall time %.2f s\n", galn_realtime() - t_all);
+	GALN_VLOG("[galn-index-gpu] write .sa %.3f s; write .bwt (overlapped) %.3f s; wait %.3f s\n", t_sa_write, t_bwt_write, galn_realtime() - t - t_sa_write);
+	if (dBuf) CK(cudaFree(dBuf));
+	CK(cudaFreeHost(hBuf)); CK(cudaFreeHost(hSamples));
+	GALN_VLOG("[galn-index-gpu] total wall time %.2f s\n", galn_realtime() - t_all);
+	fprintf(stderr, "[galn index] done in %.1f s: %s.{pac,ann,amb,bwt,sa}\n", galn_realtime() - t_all, prefix.c_str());
 	return 0;
 }

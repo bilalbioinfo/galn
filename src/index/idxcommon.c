@@ -9,6 +9,8 @@
 #include "bwa_upstream/bntseq.h"
 #include "bwa_upstream/utils.h"
 
+int galn_index_verbose = 0;
+
 double galn_realtime(void)
 {
 	struct timeval tp;
@@ -64,6 +66,11 @@ void galn_pac_to_text(const uint8_t *pac, int64_t l_pac, uint8_t *T)
 
 void galn_pack_bwt(const uint8_t *L, uint64_t n, uint32_t *buf, uint64_t L2[5])
 {
+	galn_pack_bwt_skip(L, n, UINT64_MAX, buf, L2);
+}
+
+void galn_pack_bwt_skip(const uint8_t *L, uint64_t n, uint64_t skip, uint32_t *buf, uint64_t L2[5])
+{
 	int64_t nb = (int64_t)((n + 127) / 128), b;
 	uint64_t nw = (n + 15) / 16, acc[4] = {0, 0, 0, 0};
 	uint64_t *cnt = (uint64_t*)malloc(sizeof(uint64_t) * 4 * (nb + 1));
@@ -76,8 +83,9 @@ void galn_pack_bwt(const uint8_t *L, uint64_t n, uint32_t *buf, uint64_t L2[5])
 		int j, nwb = (int)((e - s + 15) / 16);
 		for (j = 0; j < nwb; ++j) w[j] = 0;
 		for (i = s; i < e; ++i) {
-			w[(i - s) >> 4] |= (uint32_t)L[i] << ((15 - (i & 15)) << 1);
-			++c[L[i]];
+			uint8_t x = L[i + (i >= skip)];
+			w[(i - s) >> 4] |= (uint32_t)x << ((15 - (i & 15)) << 1);
+			++c[x];
 		}
 		memcpy(cnt + 4 * b, c, sizeof(c));
 	}
@@ -144,7 +152,7 @@ int galn_write_sa(const char *fn, uint64_t primary, const uint64_t L2[5], uint64
 	return 0;
 }
 
-int64_t galn_fasta_to_pac(const char *fn_fa, const char *prefix)
+int64_t galn_fasta_to_pac_serial(const char *fn_fa, const char *prefix)
 {
 	gzFile fp = xzopen(fn_fa, "r");
 	int64_t l_pac = bns_fasta2bntseq(fp, prefix, 1);

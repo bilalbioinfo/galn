@@ -31,4 +31,8 @@ read_t *read_fastq(const char *fn, int *n);
 int     read_batch_ranges(const read_t *r, int n, int **start);
 void    free_reads(read_t *r, int n);
 
+/* Bind host memory to the NUMA nodes with CPUs when there are memory-only nodes (a GH200's GPU memory).
+ * Returns the number of nodes kept, or 0 if nothing was changed. */
+int     host_mem_cpu_nodes_only(void);
+
 #endif
