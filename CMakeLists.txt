@@ -37,7 +37,7 @@ endif()
 set(GALN_INDEX_SRC src/index/galn_index.c src/index/gpu_index.cu src/index/gpu_sa.cu src/index/gpu_sa_ranks.cu src/index/cpu_ref.c src/index/idxcommon.c src/index/fasta_pac.c
     src/index/bwa_upstream/bntseq.c src/index/bwa_upstream/utils.c
     third_party/libsais/src/libsais.c third_party/libsais/src/libsais64.c third_party/libcubwt/libcubwt.cu)
-set_source_files_properties(src/index/gpu_index.cu PROPERTIES COMPILE_DEFINITIONS "main=galn_index_gpu_main;LIBSAIS_OPENMP")
+set_source_files_properties(src/index/gpu_index.cu PROPERTIES COMPILE_DEFINITIONS "main=galn_index_gpu_main")
 set_source_files_properties(src/index/cpu_ref.c PROPERTIES COMPILE_DEFINITIONS "main=galn_index_cpu_main;LIBSAIS_OPENMP")
 set_source_files_properties(third_party/libsais/src/libsais.c third_party/libsais/src/libsais64.c
     PROPERTIES COMPILE_DEFINITIONS LIBSAIS_OPENMP)

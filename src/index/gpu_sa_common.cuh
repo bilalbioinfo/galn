@@ -1,4 +1,4 @@
-/* gpu_sa_common.cuh -- GPU kernels shared by the two BWT builders (gpu_sa.cu, gpu_sa_ranks.cu). */
+/* gpu_sa_common.cuh: GPU kernels shared by the two BWT builders (gpu_sa.cu, gpu_sa_ranks.cu). */
 #ifndef GALN_GPU_SA_COMMON_CUH
 #define GALN_GPU_SA_COMMON_CUH
 
@@ -13,7 +13,7 @@
 #include <cub/cub.cuh>
 
 #define GCK(call) do { cudaError_t e_ = (call); if (e_ != cudaSuccess) { \
-	fprintf(stderr, "[galn-gpu-bwt] CUDA error %s at %s:%d: %s\n", cudaGetErrorName(e_), __FILE__, __LINE__, cudaGetErrorString(e_)); exit(2); } } while (0)
+	fprintf(stderr, "[galn index] CUDA error at %s:%d: %s\n", __FILE__, __LINE__, cudaGetErrorString(e_)); exit(2); } } while (0)
 
 #define KSYM 32                     /* symbols per sort key (2 bits each) */
 #define BSYM 11                     /* a bucket is the first 11 symbols */

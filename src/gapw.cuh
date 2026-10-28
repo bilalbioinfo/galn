@@ -16,10 +16,10 @@
  * packed entries, no per-entry link; the score is the bucket, so it is not stored), so a pop reads the top slot of the lowest
  * non-empty bucket and a push appends to its bucket, i.e. upstream's order.
  * Bucket tops, the non-empty bitmask and width[] / seed_width[] live in shared
- * memory. Chunks come from one device-wide pool: a warp takes 32 ids at a time
- * and returns every chunk it used when the read ends, so memory follows the
- * reads that actually need it. If the pool is empty the read is abandoned and
- * re-run on the CPU (never waits, so no deadlock).
+ * memory. Chunks come from the warp's own arena or, in shared-pool mode, from one
+ * device-wide pool (a warp takes 32 ids at a time and returns every chunk it used
+ * when the read ends). If no chunk is left the read is abandoned and re-run on
+ * the CPU (never waits, so no deadlock).
  *
  * Reads the engine does not take (length > GAPW_MAXLEN, n_stacks >
  * GAPW_MAXSTACK) and reads that run out of stack or alignment space return an
@@ -114,8 +114,8 @@ struct gapw_args {
      * per read, takes it; when the CPU is saturated the budget is 0 and the GPU keeps every read */
     int *handoff;
     int handoff_entries;
-    /* host-mapped list of reads the warps give up on, published as they happen so the CPU
-     * starts on them at once: fail[] starts at -1, fail_n counts reserved slots */
+    /* reads the warps give up on, published as they happen so the CPU starts on them at once
+     * (the host copies them out while the kernel runs): fail[] starts at -1, fail_n counts reserved slots */
     int *fail;
     unsigned int *fail_n;
     /* stack memory */
@@ -316,7 +316,7 @@ __device__ __forceinline__ void gapw_unlock(int *lk)
     atomicExch(lk, 0);
 }
 
-/* uniform call; returns a chunk id or -1 when the pool is exhausted */
+/* uniform call; returns a chunk id, or -1 when the arena or the pool is exhausted */
 __device__ int gapw_alloc_chunk(const gapw_args &a, gapw_smem *S, gapw_warpstate &W)
 {
     if (W.ncache > 0) { --W.ncache; return S->cache[W.ncache]; }
@@ -367,7 +367,7 @@ __device__ __forceinline__ void gapw_free_chunk(const gapw_args &a, gapw_smem *S
     else { a.chunk_prev[c] = W.lfree; W.lfree = c; }
 }
 
-/* give every chunk this read took back to the device pool */
+/* give every chunk this read took back to the device pool (arena mode: reset the arena) */
 __device__ void gapw_release_all(const gapw_args &a, gapw_warpstate &W)
 {
     int lane = gapw_lane();
@@ -521,8 +521,8 @@ __device__ int gapw_match_gap(gapw_ctx &C, const bwtgpu_meta_t *bm, int len, con
     gapw_smem *S = C.S;
     uint64_t *W = S->w, *SW = S->w + GAPW_WOFF;
     int *WB = S->bid, *SWB = S->bid + GAPW_WOFF;
-    /* the options as values: one load per read, then registers (a pointer into shared memory made every
-     * use a reload after each stack write, measured 13% slower) */
+    /* the options as values: one load per read, then registers (through a pointer into shared memory,
+     * every use would be reloaded after each stack write) */
     const bwtgap_opt_t O = *opt;
     int best_score = (O.max_diff+1) * O.s_mm + (O.max_gapo+1) * O.s_gapo + (O.max_gape+1) * O.s_gape;
     int best_diff = O.max_diff + 1, max_diff = O.max_diff;
@@ -715,7 +715,7 @@ __device__ int gapw_match_gap(gapw_ctx &C, const bwtgpu_meta_t *bm, int len, con
 
 /* persistent kernel: each warp claims list positions until the list is exhausted */
 #ifndef GAPW_MINBLOCKS
-#define GAPW_MINBLOCKS 5    /* caps registers at 96 so 5 blocks (20 warps) fit per SM: measured best on GH200 */
+#define GAPW_MINBLOCKS 5    /* caps registers at 96 so 5 blocks (20 warps) fit per SM: best on GH200 */
 #endif
 template <bool TRACE>
 __global__ void __launch_bounds__(128, GAPW_MINBLOCKS) gapw_kernel(gapw_args a)

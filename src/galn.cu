@@ -7,7 +7,7 @@
  * CPU cores help as much as there are of them; with --gpu-only the GPU does all of it.
  *
  *   light tier   every read runs on the GPU, one thread per read, with a small stack
- *                (--light-cap, default 4096). ~80% of reads finish here.
+ *                (--light-cap, default 4096). Most reads finish here.
  *   phase W      reads that overflowed are placed in one list. A persistent kernel
  *                (warp-per-read engine, gapw.cuh) claims positions from the BACK through
  *                a counter in device memory; CPU worker threads claim from the FRONT.
@@ -146,7 +146,7 @@ static int usage(void)
     fprintf(stderr,
         "\nProgram: G-ALN (GPU BWA-ALN), version " GALN_VERSION "\n"
         "         byte-identical replacement for `bwa aln` (BWA 0.7.19) on NVIDIA GPUs\n\n"
-        "Usage:   galn index [-p prefix] [-t threads] [--cpu] <in.fasta>   (see `galn index`)\n"
+        "Usage:   galn index [options] <in.fasta>   (see `galn index`)\n"
         "         galn aln [options] <prefix> <in.fq[.gz]>\n"
         "         galn samse [options] <prefix> <in.sai> <in.fq> > out.bam   (see `galn samse`)\n"
         "         galn sampe [options] <prefix> <in1.sai> <in2.sai> <in1.fq> <in2.fq> > out.bam   (see `galn sampe`)\n\n"
@@ -170,26 +170,18 @@ static int usage(void)
         "         -f FILE   file to write output to instead of stdout\n"
         "         (not supported: -q, -b/-0/-1/-2, -I, -Y, -B)\n\n"
         "G-ALN options:\n"
-        "         --cpu-workers INT  CPU threads helping the GPUs [all cores of the job minus one per GPU]\n"
-        "         --cpu-interleave INT  reads each CPU worker advances in turn, overlapping memory waits\n"
-        "                            [8, or fewer if the stacks would need more than half the job's memory]\n"
-        "         --handoff INT      give a GPU read whose stack passes INT entries to the CPU while the CPU has\n"
-        "                            room (0: the GPU keeps every read it can) [1048576]\n"
-        "         --handoff-when MODE  endgame: only after the GPU's list of heavy reads is used up; always [endgame]\n"
         "         --device LIST      CUDA device(s) to use, e.g. 0 or 0,1,2,3 [all visible devices]\n"
         "         --gpus INT         use the first INT visible devices [all]\n"
+        "         --cpu-workers INT  CPU threads helping the GPUs [all cores of the job minus one per GPU]\n"
         "         --gpu-only         the GPU does all reads it can (CPU only for reads it cannot take)\n"
         "         --cpu-only         no GPU at all\n"
-        "         --light-cap INT    stack entries per read in the light tier [4096]\n"
-        "         --warps INT        cap on resident warps of the heavy-read engine [occupancy limit]\n"
-        "         --pool-gb FLOAT    GPU memory for search stacks [all free memory but 1 GiB]\n"
-        "         --alloc MODE       stack memory of the heavy-read engine: arena (per warp) or shared [arena]\n"
-        "         --verify           re-run every heavy read finished on the GPU on the CPU and compare\n"
         "         -v                 print timing and engine statistics to stderr\n\n");
     return 1;
 }
 
-/* parse `galn aln` arguments: options may come before or after the two positional arguments */
+/* parse `galn aln` arguments: options may come before or after the two positional arguments.
+ * Tuning/testing options not in the help: --cpu-interleave, --handoff, --handoff-when, --light-cap,
+ * --warps, --pool-gb, --alloc, --verify */
 static int parse_args(int argc, char **argv, sai_gap_opt_t *o, const char **prefix, const char **fq, const char **outfn,
                       int *cpu_workers, int *il_n, long *handoff_entries, int *handoff_endgame, const char **devspec, int *ngpus, int *gpu_only, int *cpu_only, long *light_cap, int *max_warps,
                       double *pool_gb, int *verify, int *verbose, int *alloc_mode)
@@ -865,7 +857,7 @@ int galn_aln(int argc, char **argv)
         int dev_sm = 0, bps = 0;
         CUDA_CHECK(cudaDeviceGetAttribute(&dev_sm, cudaDevAttrMultiProcessorCount, device));
         size_t smem = 4 * sizeof(gapw_smem);
-        /* --verify needs the trace hash: a separate instantiation (never use its timings as performance) */
+        /* --verify needs the trace hash: a separate instantiation */
         auto gapw_k = verify? gapw_kernel<true> : gapw_kernel<false>;
         CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&bps, gapw_k, 128, smem));
         if (bps < 1) bps = 1;
@@ -900,20 +892,16 @@ int galn_aln(int argc, char **argv)
             CUDA_CHECK(cudaMemset(d_handoff, 0, sizeof(int)));
             CUDA_CHECK(cudaMalloc(&d_cancel, (size_t)n));
             CUDA_CHECK(cudaMemset(d_cancel, 0, (size_t)n));
-            /* size the warp count and the stack memory from what is left. Arenas (a fixed slice
-             * per warp, best locality) when every warp can get room for most reads; otherwise
-             * one shared pool, so memory goes only to the reads that need it. */
+            /* size the warp count and the stack memory from what is left: an arena per warp (a fixed
+             * slice, best locality), or with --alloc shared one pool, so memory goes only to the reads
+             * that need it */
             size_t avail = pool_bytes_avail(0);
             size_t scratch_per_warp = (size_t)aln_cap * sizeof(bwtgap_aln_t);
             long nw = std::min<long>(occ_warps, ((long)n + 3) / 4 * 4);
             if (max_warps > 0) nw = std::min<long>(nw, max_warps);
             const long owned_cap = max_read_chunks + 64;
             bool shared_pool = false;
-            if (!big) {
-                long arena_if_all = (long)(avail / ((size_t)std::max<long>(nw, 4))) / (long)per_chunk;
-                shared_pool = alloc_mode == 2;   /* measured: arenas beat one shared pool even on small GPUs */
-                (void)arena_if_all;
-            }
+            if (!big) shared_pool = alloc_mode == 2;   /* arenas are faster than one shared pool, even on small GPUs */
             size_t per_warp_extra = scratch_per_warp + (shared_pool? (size_t)owned_cap * sizeof(int) : 0);
             if (!shared_pool) {
                 /* phase W: at least ~0.75 M entries per warp (fewer, larger arenas on small GPUs) */

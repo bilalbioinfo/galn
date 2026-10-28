@@ -36,7 +36,8 @@ galn index -p ref ref.fa
 ```
 
 `galn index` uses the fastest GPU builder that fits in GPU memory; `-a` chooses one (run `galn index` to see the
-options). The largest reference tested so far is 66.7 Gbp, on a node with four GH200s.
+options). If no GPU builder fits, it stops: use `galn index -a cpu` to index on the CPU. The largest reference tested
+so far is 66.7 Gbp, on a node with four GH200s.
 
 2. Map the reads (example for aDNA reads):
 

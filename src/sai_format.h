@@ -1,7 +1,6 @@
 /* sai_format.h — exact on-disk layout of BWA's .sai file and option block.
  *
- * Verified byte-for-byte against lh3/bwa 0.7.19-r1273 (bwtaln.h, bwtaln.c).
- * The .sai stream is:
+ * As in lh3/bwa 0.7.19-r1273 (bwtaln.h, bwtaln.c). The .sai stream is:
  *     "SAI\1"                      (4 bytes, no NUL beyond the \1)
  *     gap_opt_t                    (sizeof == 64 bytes, one struct)
  *     per read: int32 n_aln, then n_aln * sizeof(bwt_aln1_t) (==24) bytes
@@ -33,7 +32,7 @@ typedef struct {
     uint64_t k, l;
 } sai_aln1_t;
 
-/* helpers to build/read the packed word, LSB-first to match the C bitfield ABI */
+/* build the packed word, LSB-first to match the C bitfield ABI */
 static inline uint64_t sai_pack(uint32_t n_mm, uint32_t n_gapo, uint32_t n_gape,
                                 uint32_t score, uint32_t n_ins, uint32_t n_del)
 {

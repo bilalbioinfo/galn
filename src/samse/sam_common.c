@@ -307,7 +307,6 @@ done:
 	return 0;
 }
 
-
 bwa_seqio_t *open_reads_threaded(int mode, const char *fn, inflate_t *I)
 {
 	int fds[2];

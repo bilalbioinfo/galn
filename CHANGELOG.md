@@ -1,11 +1,14 @@
 # Changelog
 
-## 0.2.7 (unreleased)
+## 0.2.7 (2026-10-28)
 
 - New `galn samse -k INT`: keeps multi-mapping reads in the BAM file like `bowtie2 -k`. Up to INT records per read, best
   first: the main alignment (the same as `bwa samse`'s) and up to INT-1 more hits as secondary alignments (flag 256,
   MAPQ 0, NM and MD tags). Hits that run past the end of a reference sequence are left out.
 - New `galn samse --no-unal`: leaves out reads that did not align.
+- `galn index` no longer falls back to the CPU when the reference does not fit in GPU memory: it stops and asks for
+  `galn index -a cpu`. Every GPU error is now reported.
+- `galn samse` and `galn sampe` print one summary line at the end; `-v` gives the details.
 
 ## 0.2.6 (2026-10-27)
 

@@ -1,16 +1,15 @@
-/* galn_index.c — `galn index`: bwa-index-compatible front end of the G-ALN index builders.
+/* galn_index.c: `galn index`, the front end of the G-ALN index builders.
  *
  *   galn index [-a auto|gpu|gpu-lowmem|cpu] [-p prefix] [-t threads] [-v] <in.fasta>
  *
- * Writes <prefix>.{pac,ann,amb,bwt,sa}, byte-identical to `bwa index` (BWA 0.7.19; the
- * BWT of a text is unique, so every builder, and bwa's `-a is`, `-a bwtsw` and `-a rb2`, give these files).
- *   -a auto        (default) the first GPU builder that fits: gpu, then gpu-lowmem; else the CPU
+ * Writes <prefix>.{pac,ann,amb,bwt,sa}, byte-identical to `bwa index` (BWA 0.7.19): the BWT of a text is
+ * unique, so every builder gives the same files.
+ *   -a auto        (default) the first GPU builder that fits: gpu, then gpu-lowmem; if neither fits,
+ *                  galn index stops and asks for -a cpu
  *   -a gpu         libcubwt up to about 2^31 symbols, longer texts galn_gpu_bwt_ranks (a rank per position)
  *   -a gpu-lowmem  galn_gpu_bwt: 2-bit text and a bitmap on each GPU, passes over all GPUs
- *   -a cpu, --cpu  CPU-only builder (libsais64, no GPU needed)
- * The GPU builders also pack the BWT, count occurrences and sample the suffix array on the GPU (packing on
- * the host cores for the largest genomes). bwa's is, bwtsw and rb2 mean auto.
- * The prefix defaults to the FASTA file name, as in bwa index.
+ *   -a cpu         CPU-only builder (libsais64, no GPU needed); --cpu is the same
+ * bwa's -a is, bwtsw and rb2 are accepted and mean auto. The prefix defaults to the FASTA file name, as in bwa index.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,7 +24,7 @@ static int index_usage(void)
     fprintf(stderr,
         "\nUsage:   galn index [-a STR] [-p prefix] [-t threads] [-v] <in.fasta>\n\n"
         "Options: -a STR   index builder [auto]:\n"
-        "                    auto        the fastest that fits in GPU memory: gpu, then gpu-lowmem, else cpu\n"
+        "                    auto        the fastest that fits in GPU memory: gpu, then gpu-lowmem\n"
         "                    gpu         fastest, but needs more memory\n"
         "                    gpu-lowmem  for large references\n"
         "                    cpu         CPU only (no GPU)\n"
@@ -48,7 +47,7 @@ int galn_index(int argc, char *argv[])
             const char *a = argv[++i];
             if (!strcmp(a, "cpu")) cpu = 1;
             else if (!strcmp(a, "gpu") || !strcmp(a, "gpu-lowmem")) algo = a;
-            else if (strcmp(a, "auto") && strcmp(a, "is") && strcmp(a, "bwtsw") && strcmp(a, "rb2")) {   /* bwa's: auto */
+            else if (strcmp(a, "auto") && strcmp(a, "is") && strcmp(a, "bwtsw") && strcmp(a, "rb2")) {
                 fprintf(stderr, "[galn index] unknown builder -a %s\n", a);
                 return index_usage();
             }

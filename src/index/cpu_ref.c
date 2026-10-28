@@ -1,9 +1,6 @@
-/* galn-index-cpu: CPU reference builder for bwa-compatible .bwt/.sa (plain suffix array via libsais64).
- *
- * Usage: galn-index-cpu [-t threads] [-f in.fasta] <prefix>
- *   -f  first write <prefix>.pac/.ann/.amb from the FASTA (as upstream bns_fasta2bntseq, for_only=1)
- *   otherwise <prefix>.pac must exist (forward-only .pac as written by `bwa index`).
- * Writes <prefix>.bwt and <prefix>.sa (byte-identical to `bwa index` 0.7.19).
+/* cpu_ref.c: the CPU index builder of `galn index -a cpu` (suffix array with libsais64).
+ * With -f, first writes <prefix>.pac/.ann/.amb from the FASTA; then <prefix>.bwt and <prefix>.sa,
+ * byte-identical to `bwa index` (BWA 0.7.19).
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -61,17 +58,18 @@ int main(int argc, char *argv[])
 	if (!pac) pac = galn_read_pac(fn, &l_pac);
 	n = 2 * l_pac;
 	T = (uint8_t*)malloc(n);
+	if (!T) { fprintf(stderr, "[galn index] out of memory\n"); return 2; }
 	galn_pac_to_text(pac, l_pac, T);
 	free(pac);
 	GALN_VLOG("[galn-index-cpu] text n=%lld (l_pac=%lld) loaded: %.2f s\n", (long long)n, (long long)l_pac, galn_realtime() - t);
 
 	t = galn_realtime();
 	SA = (int64_t*)malloc(sizeof(int64_t) * n);
-	if (!SA || !T) { fprintf(stderr, "out of memory\n"); return 2; }
+	if (!SA) { fprintf(stderr, "[galn index] out of memory\n"); return 2; }
 #ifdef _OPENMP
-	if (libsais64_omp(T, SA, n, 0, NULL, threads) != 0) { fprintf(stderr, "libsais64 failed\n"); return 3; }
+	if (libsais64_omp(T, SA, n, 0, NULL, threads) != 0) { fprintf(stderr, "[galn index] libsais64 failed\n"); return 3; }
 #else
-	if (libsais64(T, SA, n, 0, NULL) != 0) { fprintf(stderr, "libsais64 failed\n"); return 3; }
+	if (libsais64(T, SA, n, 0, NULL) != 0) { fprintf(stderr, "[galn index] libsais64 failed\n"); return 3; }
 #endif
 	GALN_VLOG("[galn-index-cpu] libsais64 suffix array: %.2f s\n", galn_realtime() - t);
 
@@ -82,6 +80,7 @@ int main(int argc, char *argv[])
 		if (SA[i] == 0) j0 = i;
 	primary = (uint64_t)j0 + 1;
 	L = (uint8_t*)malloc(n);
+	if (!L) { fprintf(stderr, "[galn index] out of memory\n"); return 2; }
 	/* L[x] = BWT char of row x + (x >= primary); row r>0 has char T[SA[r-1]-1]; row 0 has T[n-1]. */
 #pragma omp parallel for schedule(static)
 	for (i = 0; i < n; ++i) {

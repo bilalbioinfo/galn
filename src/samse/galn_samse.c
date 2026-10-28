@@ -1,7 +1,7 @@
 /* galn_samse.c — `galn samse`: `bwa samse` (BWA 0.7.19) with the index loaded once and the
  * per-read work spread over all CPU cores.
  *
- *   galn samse [-n max_occ] [-k INT] [--no-unal] [-f out.bam] [-r RG_line] [-v] <prefix> <in.sai> <in.fq>
+ *   galn samse [options] <prefix> <in.sai> <in.fq>
  *
  * bwa samse reloads the .bwt, .sa and .pac files for every batch of 262,144 reads and does all
  * work on one thread. Here the index is loaded once, and each batch is processed in three steps:
@@ -217,7 +217,7 @@ static int samse_usage(void)
 	        "         -r STR    read group header line such as '@RG\\tID:foo\\tSM:bar'\n"
 	        "         -l INT    BAM compression level, 0-9 [6]\n"
 	        "         --sam     write SAM instead of BAM\n"
-	        "         -v        print timing to stderr\n\n"
+	        "         -v        print timing details to stderr\n\n"
 	        "Writes unsorted BAM with the same alignments as `bwa samse` (BWA 0.7.19); with --sam the output\n"
 	        "is identical to bwa samse's apart from the @PG header line.\n"
 	        "Uses all CPU cores of the job (or OMP_NUM_THREADS).\n\n");
@@ -344,11 +344,11 @@ int galn_samse(int argc, char *argv[])
 	bwa_seq_close(R.ks); // closes the pipe's read end, so the decompression thread always finishes
 	inflate_join(&I);
 	err_fflush(stdout);
-	if (verbose && k) fprintf(stderr, "[galn samse] -k %d: %lld secondary records\n", k, n_sec);
+	if (k) fprintf(stderr, "[galn samse] %lld reads in %.1f s; %lld secondary records\n", n_reads, omp_get_wtime() - t0, n_sec);
+	else fprintf(stderr, "[galn samse] %lld reads in %.1f s\n", n_reads, omp_get_wtime() - t0);
 	if (verbose)
-		fprintf(stderr, "[galn samse] %lld reads in %.2f s: index %.2f s, waiting for reads %.2f s, "
-		        "per-read work %.2f s, writing %s %.2f s; reader: parsing %.2f s, .sai %.2f s, freeing %.2f s, "
-		        "queue full %.2f s; %d threads\n", n_reads, omp_get_wtime() - t0, t_idx, t_wait, t_proc,
+		fprintf(stderr, "[galn samse] index %.2f s, waiting for reads %.2f s, per-read work %.2f s, writing %s %.2f s; "
+		        "reader: parsing %.2f s, .sai %.2f s, freeing %.2f s, queue full %.2f s; %d threads\n", t_idx, t_wait, t_proc,
 		        sam_out? "SAM" : "BAM", t_write, R.t_read, R.t_sai, R.t_free, R.t_full, omp_get_max_threads());
 
 	for (i = 0; i < SAMSE_BATCH; ++i) { free(out[i].s); if (rec) free(rec[i].s); }

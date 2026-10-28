@@ -1,4 +1,4 @@
-/* idxcommon.h -- shared helpers for the G-ALN index builders (CPU reference and GPU).
+/* idxcommon.h: shared helpers for the G-ALN index builders (CPU reference and GPU).
  *
  * Everything here reproduces the on-disk conventions of BWA 0.7.19 `bwa index`:
  *   - text T = F . revcomp(F), F = forward 2-bit sequence stored in <prefix>.pac

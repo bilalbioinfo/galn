@@ -1,4 +1,4 @@
-/* fasta_pac.c -- FASTA -> <prefix>.pac/.ann/.amb on all host threads, byte-identical to BWA 0.7.19's
+/* fasta_pac.c: FASTA -> <prefix>.pac/.ann/.amb on all host threads, byte-identical to BWA 0.7.19's
  * bns_fasta2bntseq(for_only=1), i.e. to what `bwa index` writes.
  *
  * The input is read whole into memory (a plain file with parallel reads; gzip files and pipes through zlib,

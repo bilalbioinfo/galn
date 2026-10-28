@@ -1,5 +1,5 @@
-/* gpu_sa_ranks.cu -- GPU BWT of T = F . revcomp(F) with a rank for every text position in device memory
- * (G-ALN 0.2.4's builder; fast while n x 6.25 bytes plus working space fit on the GPU, else see gpu_sa.cu).
+/* gpu_sa_ranks.cu: GPU BWT of T = F . revcomp(F) with a rank for every text position in device memory
+ * (fast while n x 6.25 bytes plus working space fit on the GPU, else see gpu_sa.cu).
  *
  * Suffix sorting in two steps, all on the GPU:
  *   A. Suffixes are bucketed by their first 11 symbols. Chunks of consecutive buckets that fit in device
@@ -191,7 +191,7 @@ extern "C" int64_t galn_gpu_bwt_ranks(const uint8_t *pac, int64_t l_pac, uint8_t
 		GCK(cudaGetLastError());
 		ull got;
 		GCK(cudaMemcpy(&got, ctr, 8, cudaMemcpyDeviceToHost));
-		if (got != c) { fprintf(stderr, "[galn-gpu-bwt] internal error: chunk has %llu suffixes, expected %llu\n", got, (ull)c); exit(4); }
+		if (got != c) { fprintf(stderr, "[galn index] internal error: chunk has %llu suffixes, expected %llu\n", got, (ull)c); exit(4); }
 		double ts = galn_realtime();
 		cub::DoubleBuffer<uint64_t> dk(pool, pool + C), dv(pool + 2 * C, pool + 3 * C);
 		size_t tb = tmp_bytes;
@@ -258,7 +258,7 @@ extern "C" int64_t galn_gpu_bwt_ranks(const uint8_t *pac, int64_t l_pac, uint8_t
 		row0 += c;
 		b0 = b1;
 	}
-	if (row0 != n) { fprintf(stderr, "[galn-gpu-bwt] internal error: %llu rows, expected %llu\n", (ull)row0, (ull)n); exit(4); }
+	if (row0 != n) { fprintf(stderr, "[galn index] internal error: %llu rows, expected %llu\n", (ull)row0, (ull)n); exit(4); }
 	M.put(pool); M.put(F); M.put(keep); M.put(tmp);
 	double t_a = galn_realtime() - t;
 	GALN_VLOG("[galn-gpu-bwt] n=%llu: %llu chunks of up to %llu suffixes (radix sort %.2f s), %.2f s; tied after 32 symbols %.2f%%, "
@@ -319,7 +319,7 @@ extern "C" int64_t galn_gpu_bwt_ranks(const uint8_t *pac, int64_t l_pac, uint8_t
 			u = (uint64_t)nu;
 			h <<= 1;
 			++rounds;
-			if (h >= (1ULL << 41)) { fprintf(stderr, "[galn-gpu-bwt] internal error: prefix doubling did not finish\n"); exit(4); }
+			if (h >= (1ULL << 41)) { fprintf(stderr, "[galn index] internal error: prefix doubling did not finish\n"); exit(4); }
 		}
 	}
 	double t_b = galn_realtime() - t;
@@ -337,7 +337,7 @@ extern "C" int64_t galn_gpu_bwt_ranks(const uint8_t *pac, int64_t l_pac, uint8_t
 	uint8_t at_primary;
 	GCK(cudaMemcpy(&at_primary, Lf + primary, 1, cudaMemcpyDeviceToHost));
 	if (unset || at_primary != L_DOLLAR) {
-		fprintf(stderr, "[galn-gpu-bwt] internal error: %llu rows without a symbol, row %llu holds %d\n", unset, (ull)primary, at_primary);
+		fprintf(stderr, "[galn index] internal error: %llu rows without a symbol, row %llu holds %d\n", unset, (ull)primary, at_primary);
 		exit(4);
 	}
 	GCK(cudaMemcpy(L, Lf, primary, cudaMemcpyDeviceToHost));

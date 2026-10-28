@@ -1,4 +1,4 @@
-/* idxcommon.c -- shared helpers for the G-ALN index builders. See idxcommon.h. */
+/* idxcommon.c: shared helpers for the G-ALN index builders. See idxcommon.h. */
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,7 +20,7 @@ double galn_realtime(void)
 
 static void die(const char *msg, const char *fn)
 {
-	fprintf(stderr, "[galn-index] ERROR: %s: %s\n", msg, fn);
+	fprintf(stderr, "[galn index] %s: %s\n", msg, fn);
 	exit(1);
 }
 

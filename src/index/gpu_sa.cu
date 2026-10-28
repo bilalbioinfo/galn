@@ -1,4 +1,4 @@
-/* gpu_sa.cu -- GPU BWT and SA samples of T = F . revcomp(F) for texts too long for gpu_sa_ranks.cu.
+/* gpu_sa.cu: GPU BWT and SA samples of T = F . revcomp(F) for texts too long for gpu_sa_ranks.cu.
  *
  * Device memory holds the 2-bit text (n/4 bytes), a bitmap of n bits and working buffers; the BWT and the SA
  * samples go to host memory in large blocks only (no random host access, so it runs on any CUDA GPU).
@@ -267,7 +267,7 @@ static int sort_chunk(Ctx &X, const Chunk &ch, const uint32_t *mark, uint64_t *q
 	GCK(cudaMemset(X.ctr, 0, 8));
 	select_kernel<<<nblocks(n), TPB>>>(X.T, n, ch.b0, ch.b1, X.ctr, pool + 2 * C, pool);
 	GCK(cudaGetLastError());
-	if (dval(X.ctr) != c) { fprintf(stderr, "[galn-gpu-bwt] internal error: chunk has %llu suffixes, expected %llu\n", (ull)dval(X.ctr), (ull)c); exit(4); }
+	if (dval(X.ctr) != c) { fprintf(stderr, "[galn index] internal error: chunk has %llu suffixes, expected %llu\n", (ull)dval(X.ctr), (ull)c); exit(4); }
 	double ts = galn_realtime();
 	cub::DoubleBuffer<uint64_t> dk(pool, pool + C), dv(pool + 2 * C, pool + 3 * C);
 	size_t tb = X.tmp_bytes;
@@ -427,9 +427,9 @@ static int sort_chunk(Ctx &X, const Chunk &ch, const uint32_t *mark, uint64_t *q
 		if (t) {
 			GCK(cudaMemset(cnt, 0, 8));
 			count_marked_kernel<<<nblocks(t), TPB>>>(Pt, t, mark, cnt);
-			if (dval(cnt)) { fprintf(stderr, "[galn-gpu-bwt] internal error: %llu marked suffixes still tied\n", (ull)dval(cnt)); exit(4); }
+			if (dval(cnt)) { fprintf(stderr, "[galn index] internal error: %llu marked suffixes still tied\n", (ull)dval(cnt)); exit(4); }
 		}
-		if (dval(o.nq) != want) { fprintf(stderr, "[galn-gpu-bwt] internal error: pass 2 found %llu of %llu ranks in a chunk\n", (ull)dval(o.nq), (ull)want); exit(4); }
+		if (dval(o.nq) != want) { fprintf(stderr, "[galn index] internal error: pass 2 found %llu of %llu ranks in a chunk\n", (ull)dval(o.nq), (ull)want); exit(4); }
 	}
 	return d;
 }
@@ -663,7 +663,7 @@ extern "C" int64_t galn_gpu_bwt(const uint8_t *pac, int64_t l_pac, uint8_t *Lf, 
 	{
 		uint64_t rows = 0;
 		for (const Chunk &ch : chunks) rows += ch.c;
-		if (rows != n) { fprintf(stderr, "[galn-gpu-bwt] internal error: %llu rows, expected %llu\n", (ull)rows, (ull)n); exit(4); }
+		if (rows != n) { fprintf(stderr, "[galn index] internal error: %llu rows, expected %llu\n", (ull)rows, (ull)n); exit(4); }
 	}
 	std::vector<std::vector<uint64_t>> Uc(chunks.size());   /* tied suffixes of each chunk: (position, rank, group rank), in rank order */
 	std::vector<int> depth(chunks.size(), 0);
@@ -814,7 +814,7 @@ extern "C" int64_t galn_gpu_bwt(const uint8_t *pac, int64_t l_pac, uint8_t *Lf, 
 						for (uint64_t b = chunks[i].b0; b < chunks[i].b1; ++b) w += mb[b];
 						want[i] = w; at[i] = s; s += w;
 					}
-					if (s != m) { fprintf(stderr, "[galn-gpu-bwt] internal error: %llu of %llu marked suffixes in the chunks\n", (ull)s, (ull)m); exit(4); }
+					if (s != m) { fprintf(stderr, "[galn index] internal error: %llu of %llu marked suffixes in the chunks\n", (ull)s, (ull)m); exit(4); }
 				}
 				/* the doubling state goes to host memory while the chunk buffers are back */
 				double tk = galn_realtime();
@@ -890,9 +890,9 @@ extern "C" int64_t galn_gpu_bwt(const uint8_t *pac, int64_t l_pac, uint8_t *Lf, 
 				a = (uint64_t)na2;
 				h <<= 1;
 				++rounds;
-				if (h >= (1ULL << 41) && a) { fprintf(stderr, "[galn-gpu-bwt] internal error: prefix doubling did not finish\n"); exit(4); }
+				if (h >= (1ULL << 41) && a) { fprintf(stderr, "[galn index] internal error: prefix doubling did not finish\n"); exit(4); }
 			}
-			if (dval(err)) { fprintf(stderr, "[galn-gpu-bwt] internal error: %llu ranks not found\n", (ull)dval(err)); exit(4); }
+			if (dval(err)) { fprintf(stderr, "[galn index] internal error: %llu ranks not found\n", (ull)dval(err)); exit(4); }
 		}
 	}
 	double t_b = galn_realtime() - t;
@@ -907,7 +907,7 @@ extern "C" int64_t galn_gpu_bwt(const uint8_t *pac, int64_t l_pac, uint8_t *Lf, 
 #pragma omp parallel for schedule(static) reduction(+:bad_s)
 	for (int64_t i = 0; i < (int64_t)ns; ++i) bad_s += samples[i] == NO_SAMPLE;
 	if (bad_l || bad_s || primary > n || Lf[primary] != L_DOLLAR) {
-		fprintf(stderr, "[galn-gpu-bwt] internal error: %llu rows and %llu samples missing, primary %llu\n", (ull)bad_l, (ull)bad_s, (ull)primary);
+		fprintf(stderr, "[galn index] internal error: %llu rows and %llu samples missing, primary %llu\n", (ull)bad_l, (ull)bad_s, (ull)primary);
 		exit(4);
 	}
 	GALN_VLOG("[galn-gpu-bwt] text + buckets %.2f s, pass 1 %.2f s, doubling %.2f s (%d rounds in %d epochs, pass 2 %.2f s incl. "

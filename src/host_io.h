@@ -1,5 +1,4 @@
-/* host_io.h — host-side plumbing: load the .bwt index and read/encode FASTQ.
- * This stays on the host in both the CPU and GPU builds. */
+/* host_io.h — host-side plumbing: load the .bwt index, read/encode FASTQ, bind host memory to CPU NUMA nodes. */
 #ifndef HOST_IO_H
 #define HOST_IO_H
 
