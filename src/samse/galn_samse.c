@@ -1,7 +1,7 @@
 /* galn_samse.c — `galn samse`: `bwa samse` (BWA 0.7.19) with the index loaded once and the
  * per-read work spread over all CPU cores.
  *
- *   galn samse [-n max_occ] [-f out.sam] [-r RG_line] [-v] <prefix> <in.sai> <in.fq>
+ *   galn samse [-n max_occ] [-k INT] [--no-unal] [-f out.bam] [-r RG_line] [-v] <prefix> <in.sai> <in.fq>
  *
  * bwa samse reloads the .bwt, .sa and .pac files for every batch of 262,144 reads and does all
  * work on one thread. Here the index is loaded once, and each batch is processed in three steps:
@@ -19,6 +19,11 @@
  * A gzip-compressed FASTQ is decompressed on one more thread, which feeds the reader through a pipe
  * (BWA's reader then sees plain FASTQ), so decompression and parsing overlap.
  * The alignments are the same as bwa samse's; only the @PG header line differs.
+ *
+ * -k INT (like bowtie2 -k): up to INT records per read, the alternative hits as secondary alignments of their own
+ * instead of the XA tag. The reader thread lists the first INT hits of the .sai record (best first, as bwa_aln2seq_core
+ * lists XA hits; it draws no random numbers, so the main hit is bwa's); their positions and CIGARs are made as for XA,
+ * and sam_secondary() writes them after the main record. --no-unal leaves out reads without an aligned record.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,11 +42,12 @@
 #define SAMSE_QUEUE 2         /* batches the reader may prepare ahead */
 
 /* Everything bwa_sai2sam_se_core does for one read after bwa_aln2seq_core, in bwa's order:
- * bwa_cal_pac_pos, bwa_refine_gapped (CIGAR, MD, trimmed reads), bwa_print_sam1. */
-static void process_read(const bntseq_t *bns, const bwt_t *bwt, ubyte_t *pac, const gap_opt_t *opt,
-                         bwa_seq_t *s, kstring_t *md, kstring_t *out)
+ * bwa_cal_pac_pos, bwa_refine_gapped (CIGAR, MD, trimmed reads), bwa_print_sam1. With -k (k > 0) the hits in
+ * s->multi become records of their own (at most k-1) instead of the XA tag. Returns the number of those. */
+static int process_read(const bntseq_t *bns, const bwt_t *bwt, ubyte_t *pac, const gap_opt_t *opt, int k, int no_unal,
+                        bwa_seq_t *s, kstring_t *md, kstring_t *sec, kstring_t *out)
 {
-	int j, n_multi, strand;
+	int j, n_multi, strand, len = s->len, n_sec = 0;
 	// bwa_cal_pac_pos
 	bwa_cal_pac_pos_core(bns, bwt, s, opt->max_diff, opt->fnr);
 	for (j = n_multi = 0; j < s->n_multi; ++j) {
@@ -53,9 +59,40 @@ static void process_read(const bntseq_t *bns, const bwt_t *bwt, ubyte_t *pac, co
 	}
 	s->n_multi = n_multi;
 	refine_read(bns, pac, s, md); // bwa_refine_gapped
+	if (k > 0) {
+		sec->l = 0;
+		if (s->type != BWA_TYPE_NO_MATCH) n_sec = sam_secondary(sec, bns, pac, s, len, k - 1, opt->mode, md);
+		for (j = 0; j < s->n_multi; ++j) free(s->multi[j].cigar);
+		s->n_multi = 0; // no XA tag
+	}
 	// bwa_print_sam1
 	out->l = 0;
 	sam_line(out, bns, s, 0, opt->mode, opt->max_top2);
+	if (no_unal && n_sec == 0 && (atoi(strchr(out->s, '\t') + 1) & SAM_FSU)) out->l = 0;
+	else if (n_sec) kputsn(sec->s, sec->l, out);
+	return n_sec;
+}
+
+/* -k: the first k hits of the .sai record, best first, as bwa_aln2seq_core lists hits for XA (no random numbers) */
+static void list_hits(int n_aln, const bwt_aln1_t *aln, bwa_seq_t *s, int k)
+{
+	int i, z = 0;
+	bwtint_t n = 0;
+	for (i = 0; i < n_aln; ++i) n += aln[i].l - aln[i].k + 1;
+	if (n <= 1 || k <= 1) return;   // no hit, or only the main one
+	if (n > (bwtint_t)k) n = k;
+	s->multi = (bwt_multi1_t*)calloc(n, sizeof(bwt_multi1_t));
+	for (i = 0; i < n_aln && z < k; ++i) {
+		const bwt_aln1_t *q = aln + i;
+		bwtint_t l;
+		for (l = q->k; l <= q->l && z < k; ++l) {
+			s->multi[z].pos = l;
+			s->multi[z].gap = q->n_gapo + q->n_gape;
+			s->multi[z].ref_shift = (int)q->n_del - (int)q->n_ins;
+			s->multi[z++].mm = q->n_mm;
+		}
+	}
+	s->n_multi = z;
 }
 
 /* ---- reader thread: batches of reads with their chosen hits, in input order ---- */
@@ -69,7 +106,7 @@ typedef struct {
 	bwa_seqio_t *ks;
 	FILE *fp_sa;
 	const gap_opt_t *opt;
-	int n_occ;
+	int n_occ, k;
 	pthread_mutex_t m;
 	pthread_cond_t c;
 	batch_t *head, *tail;
@@ -126,7 +163,8 @@ static void *reader_main(void *arg)
 					aln = (bwt_aln1_t*)realloc(aln, sizeof(bwt_aln1_t) * m_aln);
 				}
 				err_fread_noeof(aln, sizeof(bwt_aln1_t), n_aln, R->fp_sa);
-				bwa_aln2seq_core(n_aln, aln, p, 1, R->n_occ);
+				bwa_aln2seq_core(n_aln, aln, p, 1, R->k? 0 : R->n_occ);
+				if (R->k) list_hits(n_aln, aln, p, R->k);
 			}
 			b->n = n_seqs;
 			b->seqs = seqs;
@@ -172,6 +210,9 @@ static int samse_usage(void)
 {
 	fprintf(stderr, "\nUsage:   galn samse [options] <prefix> <in.sai> <in.fq> > out.bam\n\n"
 	        "Options: -n INT    maximum hits to output in the XA tag; reads with more hits get none [3]\n"
+	        "         -k INT    up to INT records per read, best first: the main alignment and INT-1 more as\n"
+	        "                   secondary alignments (flag 256, MAPQ 0, NM and MD tags), instead of the XA tag\n"
+	        "         --no-unal leave out reads that did not align\n"
 	        "         -f FILE   file to write output to instead of stdout\n"
 	        "         -r STR    read group header line such as '@RG\\tID:foo\\tSM:bar'\n"
 	        "         -l INT    BAM compression level, 0-9 [6]\n"
@@ -186,19 +227,21 @@ static int samse_usage(void)
 /* argv: the arguments after `galn samse` */
 int galn_samse(int argc, char *argv[])
 {
-	int i, n_occ = 3, verbose = 0, n_pos = 0, sam_out = 0, level = 6, bad = 0;
+	int i, n_occ = 3, k = 0, no_unal = 0, verbose = 0, n_pos = 0, sam_out = 0, level = 6, bad = 0;
 	char *pos[3], *rg_line = 0, *prefix;
 	const char *fn_out = 0;
 	double t0 = omp_get_wtime(), t_idx, t_wait = 0, t_proc = 0, t_write = 0, t;
-	long long n_reads = 0;
+	long long n_reads = 0, n_sec = 0;
 	kstring_t pg = {0, 0, 0};
 	for (i = 0; i < argc; ++i) {
 		const char *a = argv[i];
 		if (!strcmp(a, "--sam")) { sam_out = 1; continue; }
+		if (!strcmp(a, "--no-unal")) { no_unal = 1; continue; }
 		if (a[0] == '-' && a[1] && !a[2]) {
 			if (a[1] == 'v') { verbose = 1; continue; }
 			if (i + 1 >= argc) return samse_usage();
 			if (a[1] == 'n') n_occ = atoi(argv[++i]);
+			else if (a[1] == 'k') { if ((k = atoi(argv[++i])) < 1) return samse_usage(); }
 			else if (a[1] == 'f') fn_out = argv[++i];
 			else if (a[1] == 'l') level = atoi(argv[++i]);
 			else if (a[1] == 'r') { if ((rg_line = bwa_set_rg(argv[++i])) == 0) return 1; }
@@ -241,7 +284,7 @@ int galn_samse(int argc, char *argv[])
 	memset(&R, 0, sizeof(R));
 	inflate_t I;
 	R.ks = open_reads_threaded(opt.mode, pos[2], &I);
-	R.fp_sa = fp_sa; R.opt = &opt; R.n_occ = n_occ;
+	R.fp_sa = fp_sa; R.opt = &opt; R.n_occ = n_occ; R.k = k;
 	pthread_mutex_init(&R.m, 0);
 	pthread_cond_init(&R.c, 0);
 	pthread_t tid;
@@ -266,17 +309,23 @@ int galn_samse(int argc, char *argv[])
 		t = omp_get_wtime();
 		#pragma omp parallel
 		{
-			kstring_t md = {0, 0, 0};
+			kstring_t md = {0, 0, 0}, sec = {0, 0, 0};
 			int r;
-			#pragma omp for schedule(dynamic, 256) reduction(+:bad)
+			#pragma omp for schedule(dynamic, 256) reduction(+:bad,n_sec)
 			for (r = 0; r < n; ++r) {
-				process_read(bns, bwt, pac, &opt, b->seqs + r, &md, &out[r]);
-				if (rec) {
+				n_sec += process_read(bns, bwt, pac, &opt, k, no_unal, b->seqs + r, &md, &sec, &out[r]);
+				if (rec) { // one record per line
+					const char *p = out[r].s, *e = out[r].s + out[r].l;
 					rec[r].l = 0;
-					if (bam_out_encode(B, out[r].s, (int)out[r].l, &rec[r]) < 0) ++bad;
+					while (p < e) {
+						const char *nl = (const char*)memchr(p, '\n', e - p);
+						int l = nl? (int)(nl - p + 1) : (int)(e - p);
+						if (bam_out_encode(B, p, l, &rec[r]) < 0) ++bad;
+						p += l;
+					}
 				}
 			}
-			free(md.s);
+			free(md.s); free(sec.s);
 		}
 		if (bad) {
 			fprintf(stderr, "[galn samse] internal error: could not encode %d SAM lines as BAM\n", bad);
@@ -295,6 +344,7 @@ int galn_samse(int argc, char *argv[])
 	bwa_seq_close(R.ks); // closes the pipe's read end, so the decompression thread always finishes
 	inflate_join(&I);
 	err_fflush(stdout);
+	if (verbose && k) fprintf(stderr, "[galn samse] -k %d: %lld secondary records\n", k, n_sec);
 	if (verbose)
 		fprintf(stderr, "[galn samse] %lld reads in %.2f s: index %.2f s, waiting for reads %.2f s, "
 		        "per-read work %.2f s, writing %s %.2f s; reader: parsing %.2f s, .sai %.2f s, freeing %.2f s, "

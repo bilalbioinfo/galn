@@ -59,6 +59,10 @@ galn sampe -f pairs.bam ref reads_1.sai reads_2.sai reads_1.fq.gz reads_2.fq.gz
 `galn samse/sampe` run `bwa samse/sampe` on the CPU cores of the GPU node and write BAM directly, with the same
 alignments as BWA. `galn samse/sampe` take the same options as `bwa samse/sampe`; add `--sam` to write SAM instead of BAM.
 
+To keep multi-mapping reads in the BAM file as `bowtie2 -k` does, use `galn samse -k INT`: up to INT records per read,
+best first. The first is the main alignment, the same as BWA's; the rest, up to INT-1 more hits, are secondary
+alignments (flag 256, MAPQ 0, with NM and MD tags) instead of the XA tag. `--no-unal` leaves out reads that did not align.
+
 All `bwa aln` options have the same meaning and defaults as in BWA 0.7.19 (not supported yet: `-q`, BAM input).
 Run `galn aln` without arguments to see all options, including `--gpus`, `--cpu-only` and `--gpu-only`.
 

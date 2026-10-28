@@ -144,6 +144,59 @@ void sam_line(kstring_t *o, const bntseq_t *bns, bwa_seq_t *p, const bwa_seq_t *
 	}
 }
 
+/* CIGAR of an alternative hit, with the part trimmed off the read (bwa aln -q) soft-clipped as
+ * bwa_correct_trimmed does for the main hit */
+static void put_cigar(kstring_t *o, const bwa_cigar_t *c, int n, int len, int clip, int strand)
+{
+	int j;
+	if (!c) {
+		if (clip && strand) ksprintf(o, "%dS", clip);
+		ksprintf(o, "%dM", len);
+		if (clip && !strand) ksprintf(o, "%dS", clip);
+		return;
+	}
+	for (j = 0; j < n; ++j) {
+		int l = __cigar_len(c[j]), op = __cigar_op(c[j]);
+		if (clip && strand && j == 0) {
+			if (op == FROM_S) l += clip; else ksprintf(o, "%dS", clip);
+		}
+		if (clip && !strand && j == n - 1 && op == FROM_S) l += clip;
+		ksprintf(o, "%d%c", l, "MIDS"[op]);
+		if (clip && !strand && j == n - 1 && op != FROM_S) ksprintf(o, "%dS", clip);
+	}
+}
+
+int sam_secondary(kstring_t *o, const bntseq_t *bns, ubyte_t *pac, const bwa_seq_t *p, int len, int max, int mode,
+                  kstring_t *md)
+{
+	int i, j, n = 0;
+	for (i = 0; i < p->n_multi && n < max; ++i) {
+		const bwt_multi1_t *q = p->multi + i;
+		int seqid, nm, span = (int)(pos_end_multi(q, len) - q->pos);
+		char *mdz;
+		bns_cnt_ambi(bns, q->pos, span, &seqid);
+		if (q->pos + span - bns->anns[seqid].offset > bns->anns[seqid].len) continue; // bridges two reference sequences
+		mdz = bwa_cal_md1(q->n_cigar, q->cigar, len, q->pos, q->strand? p->rseq : p->seq, bns->l_pac, pac, md, &nm);
+		ksprintf(o, "%s\t%d\t%s\t%d\t0\t", p->name, 0x100 | (q->strand? SAM_FSR : 0), bns->anns[seqid].name,
+		         (int)(q->pos - bns->anns[seqid].offset + 1));
+		put_cigar(o, q->cigar, q->n_cigar, len, p->full_len - len, q->strand);
+		kputs("\t*\t0\t0\t", o);
+		if (q->strand == 0) for (j = 0; j < p->full_len; ++j) kputc("ACGTN"[p->seq[j]], o);
+		else for (j = p->full_len - 1; j >= 0; --j) kputc("TGCAN"[p->seq[j]], o);
+		kputc('\t', o);
+		if (p->qual) {
+			if (q->strand == 0) kputsn((const char*)p->qual, p->full_len, o);
+			else for (j = p->full_len - 1; j >= 0; --j) kputc(p->qual[j], o);
+		} else kputc('*', o);
+		if (bwa_rg_id[0]) ksprintf(o, "\tRG:Z:%s", bwa_rg_id);
+		if (p->bc[0]) ksprintf(o, "\tBC:Z:%s", p->bc);
+		if (p->clip_len < p->full_len) ksprintf(o, "\tXC:i:%d", p->clip_len);
+		ksprintf(o, "\t%s:i:%d\tMD:Z:%s\n", (mode & BWA_MODE_COMPREAD)? "NM" : "CM", nm, mdz);
+		free(mdz);
+		++n;
+	}
+	return n;
+}
 
 /* bwa_print_sam_hdr (bwa.c), into a string */
 void sam_header(kstring_t *o, const bntseq_t *bns, const char *hdr_line)

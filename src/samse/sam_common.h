@@ -32,6 +32,13 @@ void sam_header(kstring_t *o, const bntseq_t *bns, const char *hdr_line);
 /* bwa_print_sam1 (bwase.c), into a string; mate is NULL for single-end reads */
 void sam_line(kstring_t *o, const bntseq_t *bns, bwa_seq_t *p, const bwa_seq_t *mate, int mode, int max_top2);
 
+/* galn samse -k: the alternative hits p->multi[] (positions and CIGARs as for the XA tag, after refine_read) as SAM
+ * records of their own: flag 256, MAPQ 0, the read on the hit's strand, NM and MD as for the main hit (bwa_cal_md1).
+ * len: the read length before bwa_correct_trimmed (the aligned part). Hits that bridge two reference sequences are
+ * left out. Call before sam_line (which reverses p->qual). Writes at most max records; returns their number. */
+int sam_secondary(kstring_t *o, const bntseq_t *bns, ubyte_t *pac, const bwa_seq_t *p, int len, int max, int mode,
+                  kstring_t *md);
+
 /* bwa_refine_gapped (bwase.c) for one read: CIGAR of gapped hits, MD/NM, trimmed reads */
 void refine_read(const bntseq_t *bns, ubyte_t *pac, bwa_seq_t *s, kstring_t *md);
 

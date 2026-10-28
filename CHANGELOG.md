@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.7 (unreleased)
+
+- New `galn samse -k INT`: keeps multi-mapping reads in the BAM file like `bowtie2 -k`. Up to INT records per read, best
+  first: the main alignment (the same as `bwa samse`'s) and up to INT-1 more hits as secondary alignments (flag 256,
+  MAPQ 0, NM and MD tags). Hits that run past the end of a reference sequence are left out.
+- New `galn samse --no-unal`: leaves out reads that did not align.
+
 ## 0.2.6 (2026-10-27)
 
 - `galn index` builds the index of large references on the GPU: when a genome does not fit the fastest GPU builder,
