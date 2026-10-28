@@ -349,11 +349,41 @@ static int gpu_numa_node(int dev)
     return n;
 }
 
-/* memory this process may still use: the cgroup limit (v2, then v1) or MemAvailable, whichever is smaller */
+static bool g_mem_bound = false;   /* host memory bound to the NUMA nodes with CPUs (host_mem_cpu_nodes_only) */
+
+/* free memory of the NUMA nodes with CPUs: MemFree plus the inactive file cache, which the kernel reclaims first */
+static double cpu_nodes_free()
+{
+    double sum = -1;
+    DIR *d = opendir("/sys/devices/system/node");
+    if (!d) return -1;
+    for (struct dirent *e; (e = readdir(d)) != NULL; ) {
+        if (strncmp(e->d_name, "node", 4) || e->d_name[4] < '0' || e->d_name[4] > '9') continue;
+        char path[300], buf[64] = "", line[256];
+        snprintf(path, sizeof(path), "/sys/devices/system/node/%s/cpulist", e->d_name);
+        FILE *fp = fopen(path, "r");
+        if (fp) { if (!fgets(buf, sizeof(buf), fp)) buf[0] = 0; fclose(fp); }
+        if (buf[0] < '0' || buf[0] > '9') continue;
+        snprintf(path, sizeof(path), "/sys/devices/system/node/%s/meminfo", e->d_name);
+        if (!(fp = fopen(path, "r"))) continue;
+        while (fgets(line, sizeof(line), fp)) {
+            char key[64]; double kb;
+            if (sscanf(line, "Node %*d %63s %lf", key, &kb) == 2 && (!strcmp(key, "MemFree:") || !strcmp(key, "Inactive(file):")))
+                sum = (sum < 0? 0 : sum) + kb * 1024.0;
+        }
+        fclose(fp);
+    }
+    closedir(d);
+    return sum;
+}
+
+/* memory this process may still use: the cgroup limit (v2, then v1) or the available memory, whichever is smaller;
+ * when host memory is bound to the NUMA nodes with CPUs (GH200: the GPU memory is a NUMA node too and is counted
+ * in MemAvailable), the free memory of those nodes */
 static double host_mem_avail()
 {
-    double avail = -1;
-    FILE *fp = fopen("/proc/meminfo", "r");
+    double avail = g_mem_bound? cpu_nodes_free() : -1;
+    FILE *fp = avail < 0? fopen("/proc/meminfo", "r") : NULL;
     if (fp) {
         char key[64]; double kb;
         while (fscanf(fp, "%63s %lf kB", key, &kb) == 2)
@@ -425,6 +455,7 @@ int galn_aln(int argc, char **argv)
     const int ndev = (int)devlist.size();
     {   /* host memory off the GPUs' memory (GH200: HBM is also a NUMA node), so it stays free for the search */
         int kept = host_mem_cpu_nodes_only();
+        g_mem_bound = kept > 0;
         if (kept && verbose) fprintf(stderr, "[galn] host memory bound to the %d NUMA nodes with CPUs\n", kept);
     }
 
@@ -502,20 +533,6 @@ int galn_aln(int argc, char **argv)
     uint32_t cnt_table[256];
     bwtgap_gen_cnt_table(cnt_table);
     size_t bwt_bytes = (size_t)meta.bwt_size * sizeof(uint32_t);
-    /* interleaving hides memory latency (8 reads per worker by default); every slot may grow a
-     * stack of up to max_entries entries, so cap the depth at half of the memory the job may use */
-    {
-        bool user = il_n > 0;
-        if (!user) il_n = 8;
-        il_n = std::max(1, std::min(il_n, ALN_IL_MAX));
-        double slot_bytes = ((double)opt.max_entries + 16) * sizeof(bwtgap_entry_t);
-        double avail = host_mem_avail();
-        if (!user && avail > 0) {
-            int cap = (int)(0.5 * avail / (slot_bytes * std::max(1, workers)));
-            if (cap < il_n) il_n = std::max(1, cap);
-        }
-    }
-
     /* ---- one host copy of the index per NUMA node that has workers (CPU search is latency-bound) ---- */
     std::vector<int> rep_node;
     std::vector<uint32_t*> rep_ptr;
@@ -544,6 +561,20 @@ int galn_aln(int argc, char **argv)
         if (all) { free(bwt); bwt = rep_ptr[0]; }   /* the replicas replace the loaded copy */
         else for (auto &p : rep_ptr) { free(p); p = nullptr; }
         if (!all) rep_node.clear();
+    }
+    /* interleaving hides memory latency (8 reads per worker by default); every slot may grow a
+     * stack of up to max_entries entries, so cap the depth at half of the memory the job may still use
+     * once the index copies are in place */
+    {
+        bool user = il_n > 0;
+        if (!user) il_n = 8;
+        il_n = std::max(1, std::min(il_n, ALN_IL_MAX));
+        double slot_bytes = ((double)opt.max_entries + 16) * sizeof(bwtgap_entry_t);
+        double avail = host_mem_avail();
+        if (!user && avail > 0) {
+            int cap = (int)(0.5 * avail / (slot_bytes * std::max(1, workers)));
+            if (cap < il_n) il_n = std::max(1, cap);
+        }
     }
     auto bwt_for_node = [&](int node) -> const uint32_t* {
         for (size_t k = 0; k < rep_node.size(); ++k) if (rep_node[k] == node && rep_ptr[k]) return rep_ptr[k];

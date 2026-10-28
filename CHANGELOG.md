@@ -9,6 +9,8 @@
 - `galn index` no longer falls back to the CPU when the reference does not fit in GPU memory: it stops and asks for
   `galn index -a cpu`. Every GPU error is now reported.
 - `galn samse` and `galn sampe` print one summary line at the end; `-v` gives the details.
+- `galn aln` on GH200 nodes: the host-memory budget now counts only the CPU memory (the GPU memory is a NUMA node
+  too), so large indexes no longer run out of memory (50M reads against a 67 Gbp index: 234 GB, before: killed).
 
 ## 0.2.6 (2026-10-27)
 
