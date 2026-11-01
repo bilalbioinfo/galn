@@ -86,6 +86,7 @@ static void galn_die(const char *fmt, ...)
 __constant__ bwtgpu_meta_t g_meta;
 
 #include "gapw.cuh"
+#include "prefilter.cuh"
 
 /* ------------------------------------------------------------------------- */
 /* light tier: one thread per read                                           */
@@ -174,6 +175,8 @@ static int usage(void)
         "         --gpus INT         use the first INT visible devices [all]\n"
         "         --cpu-workers INT  CPU threads helping the GPUs [all cores of the job minus one per GPU]\n"
         "         --gpu-only         the GPU does all reads it can (CPU only for reads it cannot take)\n"
+        "         --no-prefilter     search every read; by default the GPU first proves which reads have no\n"
+        "                            alignment (search schemes) and only the others are searched\n"
         "         --cpu-only         no GPU at all\n"
         "         -v                 print timing and engine statistics to stderr\n\n");
     return 1;
@@ -181,10 +184,11 @@ static int usage(void)
 
 /* parse `galn aln` arguments: options may come before or after the two positional arguments.
  * Tuning/testing options not in the help: --cpu-interleave, --handoff, --handoff-when, --light-cap,
- * --warps, --pool-gb, --alloc, --verify */
+ * --warps, --pool-gb, --alloc, --verify (which also re-runs every read the prefilter skipped on the CPU:
+ * each must have no alignment) */
 static int parse_args(int argc, char **argv, sai_gap_opt_t *o, const char **prefix, const char **fq, const char **outfn,
                       int *cpu_workers, int *il_n, long *handoff_entries, int *handoff_endgame, const char **devspec, int *ngpus, int *gpu_only, int *cpu_only, long *light_cap, int *max_warps,
-                      double *pool_gb, int *verify, int *verbose, int *alloc_mode)
+                      double *pool_gb, int *verify, int *verbose, int *alloc_mode, int *prefilter)
 {
     int opte = -1, npos = 0;
     *o = opt_default();
@@ -200,6 +204,7 @@ static int parse_args(int argc, char **argv, sai_gap_opt_t *o, const char **pref
         if (!strcmp(a, "-N")) { o->mode |= OPT_MODE_NONSTOP; o->max_top2 = 0x7fffffff; continue; }
         if (!strcmp(a, "--gpu-only")) { *gpu_only = 1; continue; }
         if (!strcmp(a, "--cpu-only")) { *cpu_only = 1; continue; }
+        if (!strcmp(a, "--no-prefilter")) { *prefilter = 0; continue; }
         if (!strcmp(a, "--verify")) { *verify = 1; continue; }
         if (!strcmp(a, "-v")) { *verbose = 1; continue; }
         if (!v) { fprintf(stderr, "[galn] option %s needs a value\n", a); return -1; }
@@ -293,6 +298,9 @@ struct DevState {
     /* statistics */
     double t_light = 0, t_W = 0, t_G = 0, k_light = 0, k_W = 0, k_G = 0, pops_W = 0, pops_G = 0, epops = 0;
     long n_light_done = 0, n_W_gpu = 0, n_G_gpu = 0, n_giant = 0, n_unsup = 0, nwW = 0, nwG = 0;
+    double t_pf = 0, k_pf = 0;
+    long n_pf = 0;              /* reads the prefilter proved to have no alignment */
+    long n_pf_exact = 0;        /* reads it passed on at once because they occur exactly */
 };
 
 struct Shared {
@@ -418,11 +426,14 @@ int galn_aln(int argc, char **argv)
     sai_gap_opt_t opt;
     const char *prefix = NULL, *fq = NULL, *outfn = NULL, *devspec = NULL;
     int cpu_workers = 0, il_n = 0, ngpus = 0, gpu_only = 0, cpu_only = 0, max_warps = 0, verify = 0, verbose = 0, alloc_mode = 0;
+    int prefilter = 1;
     long light_cap = 4096, handoff_entries = 1L << 20;
     int handoff_endgame = 1;
     double pool_gb = 0;
     if (parse_args(argc, argv, &opt, &prefix, &fq, &outfn, &cpu_workers, &il_n, &handoff_entries, &handoff_endgame, &devspec, &ngpus, &gpu_only, &cpu_only,
-                   &light_cap, &max_warps, &pool_gb, &verify, &verbose, &alloc_mode) < 0) return usage();
+                   &light_cap, &max_warps, &pool_gb, &verify, &verbose, &alloc_mode, &prefilter) < 0) return usage();
+    /* the prefilter counts gap extensions against max_diff, as bwa does only in BWA_MODE_GAPE (not with -e) */
+    if (!(opt.mode & OPT_MODE_GAPE)) prefilter = 0;
     if (light_cap < 16) light_cap = 16;
 
     /* ---- GPUs: --device list, else the first --gpus, else every visible device ---- */
@@ -530,6 +541,10 @@ int galn_aln(int argc, char **argv)
     fq_thread.join();
     if (!bwt) { if (reads) free_reads(reads, nreads); return 2; }
     if (!reads) { free(bwt); return 3; }
+    if (prefilter && !pf_supported(meta.L2)) {
+        prefilter = 0;
+        if (verbose) fprintf(stderr, "[galn] prefilter off: a base occurs 2^32 times or more in this index\n");
+    }
     uint32_t cnt_table[256];
     bwtgap_gen_cnt_table(cnt_table);
     size_t bwt_bytes = (size_t)meta.bwt_size * sizeof(uint32_t);
@@ -755,7 +770,8 @@ int galn_aln(int argc, char **argv)
     std::vector<std::thread> pool;
     std::vector<char> by_warp;
     std::vector<unsigned long long> warp_pops, warp_trace;
-    if (verify) { by_warp.assign(nreads, 0); warp_pops.assign(nreads, 0); warp_trace.assign(nreads, 0); }
+    std::vector<char> by_pf;
+    if (verify) { by_warp.assign(nreads, 0); warp_pops.assign(nreads, 0); warp_trace.assign(nreads, 0); by_pf.assign(nreads, 0); }
 
     /* host arrays every GPU uploads (all reads, indexed by read number) */
     uint64_t total = 0;
@@ -812,10 +828,33 @@ int galn_aln(int argc, char **argv)
             return avail;
         };
 
-        /* ================= light tier ================= */
-        if (nmine > 0) {
+        /* ================= prefilter: reads proven to have no alignment ================= */
+        std::vector<int> todo;   /* the reads the exact engines search, in D.reads order */
+        if (prefilter && nmine > 0) {
             double ts = now_s();
-            int maxl = std::min(nmine, 262144);
+            std::vector<uint8_t> verdict(nmine, PF_MAYBE);
+            double k = pf_init_device(meta.L2)? -1
+                     : pf_run(ks, d_bwt, meta.primary, d_q, d_off, d_len, d_maxdiff, d_bid, d_bopts,
+                              D.reads.data(), h_len.data(), nmine, opt.seed_len, verdict.data(), &D.n_pf_exact);
+            todo.reserve(nmine);
+            for (int p = 0; p < nmine; ++p) {
+                int r = D.reads[p];
+                if (verdict[p] != PF_NONE) todo.push_back(r);
+                else if (res.claim(r)) {   /* bwa finds nothing for it: an empty .sai record */
+                    res.n[r] = 0;
+                    ++D.n_pf;
+                    if (verify) by_pf[r] = 1;
+                }
+            }
+            D.k_pf = k > 0? k : 0;
+            D.t_pf = now_s() - ts;
+        } else todo = D.reads;
+        const int nlight = (int)todo.size();
+
+        /* ================= light tier ================= */
+        if (nlight > 0) {
+            double ts = now_s();
+            int maxl = std::min(nlight, 262144);
             uint64_t wcap = std::min<uint64_t>(total + nreads, (uint64_t)maxl * (max_len + 1)) + 1;
             int acap = 32;
             int *d_idx, *d_heads, *d_naln; uint64_t *d_woff; bwtgap_width_t *d_w, *d_sw; bwtgap_aln_t *d_aln;
@@ -838,10 +877,10 @@ int galn_aln(int argc, char **argv)
             std::vector<bwtgap_aln_t> r_aln((size_t)pl * acap);
             cudaEvent_t e0, e1;
             CUDA_CHECK(cudaEventCreate(&e0)); CUDA_CHECK(cudaEventCreate(&e1));
-            for (long c0 = 0; c0 < nmine; c0 += pl) {
-                int m = (int)std::min<long>(pl, nmine - c0);
+            for (long c0 = 0; c0 < nlight; c0 += pl) {
+                int m = (int)std::min<long>(pl, nlight - c0);
                 uint64_t wl = 0;
-                for (int j = 0; j < m; ++j) { int r = D.reads[c0 + j]; h_idx[j] = r; h_woff[j] = wl; wl += reads[r].len + 1; }
+                for (int j = 0; j < m; ++j) { int r = todo[c0 + j]; h_idx[j] = r; h_woff[j] = wl; wl += reads[r].len + 1; }
                 CUDA_CHECK(cudaMemcpyAsync(d_idx, h_idx.data(), (size_t)m * sizeof(int), cudaMemcpyHostToDevice, ks));
                 CUDA_CHECK(cudaMemcpyAsync(d_woff, h_woff.data(), (size_t)m * sizeof(uint64_t), cudaMemcpyHostToDevice, ks));
                 light_args a;
@@ -1227,6 +1266,31 @@ int galn_aln(int argc, char **argv)
         verify_fail = bad? 6 : 0;
     }
 
+    /* ---- optional verification of every read the prefilter skipped: the CPU must find no alignment ---- */
+    if (verify && !by_pf.empty()) {
+        std::vector<int> vr;
+        for (int r = 0; r < nreads; ++r) if (by_pf[r]) vr.push_back(r);
+        std::atomic<long> bad(0);
+        std::atomic<size_t> next(0);
+        std::vector<std::thread> vt;
+        for (int w = 0; w < workers; ++w) vt.emplace_back([&] {
+            aln_ws_t ws;
+            aln_ws_init(&ws);
+            aln_ws_prealloc(&ws, opt.max_entries + 16, max_stacks, max_len, opt.seed_len);
+            for (size_t j; (j = next++) < vr.size(); ) {
+                int r = vr[j], b = h_bid[r];
+                int rr = aln_search_host(bwt, &meta, cnt_table, &opt, &bopts[b], bstacks[b], &reads[r], &ws);
+                if (rr != 0 && bad++ < 10)
+                    fprintf(stderr, "[galn verify] read %d (%s) was skipped by the prefilter but the CPU returns %d\n", r, reads[r].name, rr);
+            }
+            aln_ws_free(&ws);
+        });
+        for (auto &th : vt) th.join();
+        fprintf(stderr, "[galn verify] %zu prefiltered reads re-run on the CPU: %ld not empty -> %s\n", vr.size(), (long)bad,
+                bad? "FAIL" : "PASS");
+        if (bad) verify_fail = 6;
+    }
+
     /* ---- write .sai in input order ---- */
     sai_write_header(out, &opt);
     long mapped = 0, n_rec = 0;
@@ -1250,6 +1314,9 @@ int galn_aln(int argc, char **argv)
     if (verbose) {
         for (auto &dp : S.devs) {
             DevState &D = *dp;
+            if (prefilter)
+                fprintf(stderr, "[galn] GPU %d prefilter: %ld of %zu reads have no alignment, %ld occur exactly, %.2f s (kernels %.2f s)\n",
+                        D.dev, D.n_pf, D.reads.size(), D.n_pf_exact, D.t_pf, D.k_pf);
             fprintf(stderr, "[galn] GPU %d (NUMA %d): %zu reads; light tier %ld finished, %.2f s (kernels %.2f s); "
                     "phase W %ld reads on %ld warps, %.2f s (kernel %.2f s, %.3e pops/s; executed %.3e pops/s), %ld giant reported; "
                     "phase G %ld reads on %ld warps, %.2f s (kernel %.2f s)\n",

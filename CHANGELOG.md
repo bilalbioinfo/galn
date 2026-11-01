@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- `galn aln` first proves on the GPU which reads have no alignment within the search bounds (search-scheme
+  prefilter, ported from gpualn) and searches only the others. Output is unchanged (byte-identical); reads
+  without a hit are the slowest to search, so runs are 2-8x faster on our test libraries. `--no-prefilter`
+  turns it off; `--verify` also re-runs every filtered read on the CPU.
+
 ## 0.2.7 (2026-10-28)
 
 - New `galn samse -k INT`: keeps multi-mapping reads in the BAM file like `bowtie2 -k`. Up to INT records per read, best
