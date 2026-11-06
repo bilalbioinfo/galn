@@ -5,10 +5,14 @@ G-ALN runs `bwa aln/index` on NVIDIA GPUs. The output files are byte-identical t
 
 ![Benchmarks](docs/benchmarks.png)
 
-Benchmarks of G-ALN 0.2.6 (dark blue) compared with the preprint version 0.2.1 (light blue),
-BWA 0.7.19 and bowtie2-build (grey); all output files are identical to those of BWA. e–f: indexing SE_Plant_database
-(39 genomes, 66.7 Gbp) on a GPU node (4 GH200) and with bowtie2-build on a CPU node: wall-clock time (e) and peak
-memory (f; for G-ALN, peak host memory, not counting GPU memory).
+Benchmarks of G-ALN 0.2.7 against BWA 0.7.19 (A, B) and bowtie2 2.5.5 (C), with 50 M reads per dataset. G-ALN ran on
+a GPU node with 4× NVIDIA GH200 (indexing in A and B on one GH200); BWA and bowtie2 on CPU nodes with 2× AMD EPYC 7742
+(128 cores) or 2× AMD EPYC 9755 (256 cores). Above each bar is its value and, in green, how G-ALN compares with it.
+A, B: `aln -l 1024 -n 0.01 -o 2` (aDNA settings) for both tools; G-ALN's output files are byte-identical to BWA's.
+C: G-ALN `aln` with the default parameters and `samse -k 1000 --no-unal`; bowtie2 with the default preset and
+`-k 1000 --no-unal`; bowtie2-build `--large-index` with 64 threads on large-memory nodes (2× AMD EPYC 7742 with 1–2 TB,
+2× AMD EPYC 9745 with 3 TB). Total: building the index and mapping. Energy: G-ALN the GH200 modules; BWA the CPU
+sockets (EPYC 9755) or the whole node (EPYC 7742). Peak RAM: host memory.
 
 ## Requirements
 
