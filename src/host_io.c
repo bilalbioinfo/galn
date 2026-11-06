@@ -65,7 +65,11 @@ uint32_t *load_bwt(const char *fn, bwtgpu_meta_t *m)
             done += (size_t)r;
         }
     }
-    posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);   /* the index is in our buffer now: no page-cache copy */
+    /* the page-cache copy of the .bwt is kept for the next program on the same index (galn samse, bwa, another run);
+     * galn aln counts it as free memory (host_mem_avail), and the kernel gives it back when memory runs short.
+     * GALN_DROP_BWT_CACHE=1 drops it (all of the file's cached pages, also those other programs cached). */
+    const char *drop = getenv("GALN_DROP_BWT_CACHE");
+    if (drop && atoi(drop) > 0) posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED);
     close(fd);
     if (!ok) { fprintf(stderr, "[load_bwt] short read on %s\n", fn); free(mem); return NULL; }
     return (uint32_t*)mem;

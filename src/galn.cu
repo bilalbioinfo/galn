@@ -377,9 +377,22 @@ static double cpu_nodes_free()
     return sum;
 }
 
+/* a field of the cgroup's memory.stat, in bytes (0 if missing) */
+static double cgroup_stat(const char *fn, const char *field)
+{
+    FILE *fp = fopen(fn, "r");
+    if (!fp) return 0;
+    char key[64]; double v, r = 0;
+    while (fscanf(fp, "%63s %lf", key, &v) == 2)
+        if (!strcmp(key, field)) { r = v; break; }
+    fclose(fp);
+    return r;
+}
+
 /* memory this process may still use: the cgroup limit (v2, then v1) or the available memory, whichever is smaller;
  * when host memory is bound to the NUMA nodes with CPUs (GH200: the GPU memory is a NUMA node too and is counted
- * in MemAvailable), the free memory of those nodes */
+ * in MemAvailable), the free memory of those nodes. The cgroup's usage includes its page cache; the inactive file
+ * pages (e.g. the .bwt just read) are given back when memory runs short, so they count as free, as in MemAvailable. */
 static double host_mem_avail()
 {
     double avail = g_mem_bound? cpu_nodes_free() : -1;
@@ -392,6 +405,8 @@ static double host_mem_avail()
     }
     const char *lim[] = { "/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory/memory.limit_in_bytes" };
     const char *use[] = { "/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory/memory.usage_in_bytes" };
+    const char *stat[] = { "/sys/fs/cgroup/memory.stat", "/sys/fs/cgroup/memory/memory.stat" };
+    const char *cache[] = { "inactive_file", "total_inactive_file" };
     for (int i = 0; i < 2; ++i) {
         FILE *a = fopen(lim[i], "r"), *b = fopen(use[i], "r");
         double l = -1, u = 0;
@@ -399,7 +414,12 @@ static double host_mem_avail()
         if (b && fscanf(b, "%lf", &u) != 1) u = 0;
         if (a) fclose(a);
         if (b) fclose(b);
-        if (l > 0 && l < 1e18) { double left = l - u; if (avail < 0 || left < avail) avail = left; break; }
+        if (l > 0 && l < 1e18) {
+            u = std::max(0.0, u - cgroup_stat(stat[i], cache[i]));
+            double left = l - u;
+            if (avail < 0 || left < avail) avail = left;
+            break;
+        }
     }
     return avail;
 }

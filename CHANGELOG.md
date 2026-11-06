@@ -11,6 +11,9 @@
 - `galn samse` and `galn sampe` print one summary line at the end; `-v` gives the details.
 - `galn aln` on GH200 nodes: the host-memory budget now counts only the CPU memory (the GPU memory is a NUMA node
   too), so large indexes no longer run out of memory (50M reads against a 67 Gbp index: 234 GB, before: killed).
+- `galn aln` keeps the `.bwt` in the page cache (since 0.2.6 it dropped it after loading), so the next program on the
+  same index (`galn samse/sampe`, another `galn aln`, `bwa`) no longer reads it from disk again.
+  `GALN_DROP_BWT_CACHE=1` drops the cached `.bwt` as before.
 
 ## 0.2.6 (2026-10-27)
 
