@@ -1,5 +1,4 @@
-/* host_io.h — host-side plumbing: load the .bwt index and read/encode FASTQ.
- * This stays on the host in both the CPU and GPU builds. */
+/* host_io.h — host-side plumbing: load the .bwt index, read/encode FASTQ, bind host memory to CPU NUMA nodes. */
 #ifndef HOST_IO_H
 #define HOST_IO_H
 
@@ -30,5 +29,9 @@ read_t *read_fastq(const char *fn, int *n);
 /* Contiguous batch ranges: *start gets n_batch+1 entries (start[b]..start[b+1]-1). Returns n_batch. */
 int     read_batch_ranges(const read_t *r, int n, int **start);
 void    free_reads(read_t *r, int n);
+
+/* Bind host memory to the NUMA nodes with CPUs when there are memory-only nodes (a GH200's GPU memory).
+ * Returns the number of nodes kept, or 0 if nothing was changed. */
+int     host_mem_cpu_nodes_only(void);
 
 #endif

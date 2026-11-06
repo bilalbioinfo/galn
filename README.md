@@ -5,8 +5,14 @@ G-ALN runs `bwa aln/index` on NVIDIA GPUs. The output files are byte-identical t
 
 ![Benchmarks](docs/benchmarks.png)
 
-Benchmarks of G-ALN 0.2.4 (dark blue) compared with the preprint version 0.2.1 (light blue) and BWA 0.7.19 (grey);
-all output files are identical to those of BWA.
+Benchmarks of G-ALN 0.2.7 against BWA 0.7.19 (A, B) and bowtie2 2.5.5 (C), with 50 M reads per dataset. G-ALN ran on
+a GPU node with 4× NVIDIA GH200 (indexing in A and B on one GH200); BWA and bowtie2 on CPU nodes with 2× AMD EPYC 7742
+(128 cores) or 2× AMD EPYC 9755 (256 cores). Above each bar is its value and, in green, how G-ALN compares with it.
+A, B: `aln -l 1024 -n 0.01 -o 2` (aDNA settings) for both tools; G-ALN's output files are byte-identical to BWA's.
+C: G-ALN `aln` with the default parameters and `samse -k 1000 --no-unal`; bowtie2 with the default preset and
+`-k 1000 --no-unal`; bowtie2-build `--large-index` with 64 threads on large-memory nodes (2× AMD EPYC 7742 with 1–2 TB,
+2× AMD EPYC 9745 with 3 TB). Total: building the index and mapping. Energy: G-ALN the GH200 modules; BWA the CPU
+sockets (EPYC 9755) or the whole node (EPYC 7742). Peak RAM: host memory.
 
 ## Requirements
 
@@ -33,6 +39,10 @@ The program is `build/galn`.
 galn index -p ref ref.fa
 ```
 
+`galn index` uses the fastest GPU builder that fits in GPU memory; `-a` chooses one (run `galn index` to see the
+options). If no GPU builder fits, it stops: use `galn index -a cpu` to index on the CPU. The largest reference tested
+so far is 66.7 Gbp, on a node with four GH200s.
+
 2. Map the reads (example for aDNA reads):
 
 ```
@@ -53,6 +63,10 @@ galn sampe -f pairs.bam ref reads_1.sai reads_2.sai reads_1.fq.gz reads_2.fq.gz
 
 `galn samse/sampe` run `bwa samse/sampe` on the CPU cores of the GPU node and write BAM directly, with the same
 alignments as BWA. `galn samse/sampe` take the same options as `bwa samse/sampe`; add `--sam` to write SAM instead of BAM.
+
+To keep multi-mapping reads in the BAM file as `bowtie2 -k` does, use `galn samse -k INT`: up to INT records per read,
+best first. The first is the main alignment, the same as BWA's; the rest, up to INT-1 more hits, are secondary
+alignments (flag 256, MAPQ 0, with NM and MD tags) instead of the XA tag. `--no-unal` leaves out reads that did not align.
 
 All `bwa aln` options have the same meaning and defaults as in BWA 0.7.19 (not supported yet: `-q`, BAM input).
 Run `galn aln` without arguments to see all options, including `--gpus`, `--cpu-only` and `--gpu-only`.

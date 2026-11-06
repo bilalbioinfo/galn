@@ -306,7 +306,7 @@ static int sampe_usage(const pe_opt_t *popt)
 	fprintf(stderr, "         -P       accepted for compatibility (the index is always loaded once)\n");
 	fprintf(stderr, "         -l INT   BAM compression level, 0-9 [6]\n");
 	fprintf(stderr, "         --sam    write SAM instead of BAM\n");
-	fprintf(stderr, "         -v       print timing to stderr\n\n");
+	fprintf(stderr, "         -v       print timing details to stderr\n\n");
 	fprintf(stderr, "Writes unsorted BAM with the same alignments as `bwa sampe` (BWA 0.7.19); with --sam the output\n"
 	        "is identical to bwa sampe's apart from the @PG header line.\n"
 	        "Uses all CPU cores of the job (or OMP_NUM_THREADS).\n\n");
@@ -404,6 +404,7 @@ int galn_sampe(int argc, char *argv[])
 	kstring_t *rec = sam_out? 0 : (kstring_t*)calloc(2 * SAMPE_BATCH, sizeof(kstring_t));
 	isize_info_t last_ii;
 	last_ii.avg = -1.0;
+	if (popt->force_isize) fprintf(stderr, "[galn sampe] discard insert size estimate as user's request.\n");
 	for (;;) {
 		pbatch_t *b = pnext_batch(&R);
 		int n = b->n, bad = 0, bad_name = -1, cnt_chg = 0;
@@ -420,7 +421,6 @@ int galn_sampe(int argc, char *argv[])
 		infer_isize(n, b->seqs, &ii, popt->ap_prior, bwt->seq_len/2);
 		if (ii.avg < 0.0 && last_ii.avg > 0.0) ii = last_ii;
 		if (popt->force_isize) {
-			fprintf(stderr, "[galn sampe] discard insert size estimate as user's request.\n");
 			ii.low = ii.high = 0; ii.avg = ii.std = -1.0;
 		}
 		// per pair: pairing, alternative hits, mate rescue, CIGAR/MD, SAM lines (and BAM records)
@@ -480,10 +480,11 @@ int galn_sampe(int argc, char *argv[])
 	if (B) bam_out_close(B);
 	for (j = 0; j < 2; ++j) { bwa_seq_close(R.ks[j]); inflate_join(&I[j]); err_fclose(fp_sa[j]); }
 	err_fflush(stdout);
+	fprintf(stderr, "[galn sampe] %lld pairs in %.1f s\n", n_pairs, omp_get_wtime() - t0);
 	if (verbose) {
-		fprintf(stderr, "[galn sampe] %lld pairs in %.2f s (index %.2f s), %d threads; %lld alignments moved by "
+		fprintf(stderr, "[galn sampe] index %.2f s, %d threads; %lld alignments moved by "
 		        "pairing; %llu of %llu Q%d singletons mated, %llu of %llu Q%d discordant pairs fixed\n",
-		        n_pairs, omp_get_wtime() - t0, t_idx, omp_get_max_threads(), cnt_chg_tot,
+		        t_idx, omp_get_max_threads(), cnt_chg_tot,
 		        (unsigned long long)n_mapped[1], (unsigned long long)n_tot[1], SW_MIN_MAPQ,
 		        (unsigned long long)n_mapped[0], (unsigned long long)n_tot[0], SW_MIN_MAPQ);
 	}

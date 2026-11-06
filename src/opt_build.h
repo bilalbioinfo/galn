@@ -1,6 +1,6 @@
-/* opt_build.h — reconstruct BWA's gap_opt_t option block for the .sai header.
- * Mirrors gap_init_opt() + the option handling of bwa_aln() in bwtaln.c
- * (0.7.19-r1273). The resulting block is written verbatim into the .sai.
+/* opt_build.h — BWA's gap_opt_t defaults (gap_init_opt() in bwtaln.c, 0.7.19-r1273) for the
+ * .sai header; parse_args (galn.cu) applies the options as bwa_aln() does, and the resulting
+ * block is written verbatim into the .sai.
  *
  * NOTE: when -n is given as a FRACTION (contains '.'), upstream sets
  * max_diff=-1 and fnr=frac, and recomputes max_diff per read at run time (on a
