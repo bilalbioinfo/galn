@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.7 (2026-10-28)
+## 0.2.7 (2026-11-06)
 
 - New `galn samse -k INT`: keeps multi-mapping reads in the BAM file like `bowtie2 -k`. Up to INT records per read, best
   first: the main alignment (the same as `bwa samse`'s) and up to INT-1 more hits as secondary alignments (flag 256,
