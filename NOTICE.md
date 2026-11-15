@@ -5,6 +5,10 @@ G-ALN (GPU BWA-ALN) is distributed under the GNU General Public License v3 (see 
 - Its alignment search (`src/bwtgap_hd.h`, `src/gapw.cuh`, `src/bwtsearch.h`) is a port of BWA's
   `bwt_match_gap`, `bwt_occ4`/`bwt_2occ4`, `bwt_cal_width` and related code from BWA 0.7.19
   (Heng Li; https://github.com/lh3/bwa; GPLv3).
+- `src/prefilter.cuh` (the search-scheme prefilter) is ported from gpualn (https://github.com/teepean/gpualn:
+  `cuda/scheme_engine.cuh`, `cuda/schemes.cuh`, `cuda/fm_device.cuh`; Copyright (C) 2026 teepean; GPLv3).
+  Its search-scheme tables are from Kianfar et al. 2018 (K=1,2), SeqAn3 `optimum_search_scheme` (K=3) and
+  Renders et al. / Columba (K=4).
 - `src/kseq.h` and `src/index/bwa_upstream/` (`bntseq.[ch]`, `utils.[ch]`, `kseq.h`, `khash.h`,
   `ksort.h`) are unmodified copies from BWA 0.7.19 carrying MIT licence headers.
 - `galn samse` / `galn sampe` use BWA 0.7.19's own code: `src/samse/bwa_upstream/` holds unmodified copies
